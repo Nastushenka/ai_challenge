@@ -103,5 +103,5 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     address = ("127.0.0.1", 8000)
-    print("LLM Chat: http://127.0.0.1:8000")
+    print("Nastia Chat: http://127.0.0.1:8000")
     ThreadingHTTPServer(address, Handler).serve_forever()
