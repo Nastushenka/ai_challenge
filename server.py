@@ -35,6 +35,12 @@ def truncate_words(text, max_words):
     return text[:cut_at].rstrip(" ,;:.") + "…"
 
 
+def apply_stop_sequence(text, stop_sequence):
+    if not stop_sequence or stop_sequence not in text:
+        return text
+    return text.split(stop_sequence, 1)[0].rstrip()
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -55,6 +61,8 @@ class Handler(SimpleHTTPRequestHandler):
             prompt = payload.get("prompt", "").strip()
             use_format = payload.get("use_format", True) is not False
             max_words = int(payload.get("max_words", 200))
+            finish_mode = payload.get("finish_mode", "none")
+            finish_value = payload.get("finish_value", "").strip()
         except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
             self.send_json(400, {"error": "Некорректный запрос."})
             return
@@ -64,6 +72,19 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if not 20 <= max_words <= 2000:
             self.send_json(400, {"error": "Укажите ограничение от 20 до 2000 слов."})
+            return
+        if finish_mode not in {"none", "instruction", "sequence"}:
+            self.send_json(400, {"error": "Выберите допустимое условие завершения."})
+            return
+        if finish_mode != "none" and not finish_value:
+            self.send_json(400, {"error": "Укажите условие завершения ответа."})
+            return
+        max_finish_length = 500 if finish_mode == "instruction" else 100
+        if len(finish_value) > max_finish_length:
+            self.send_json(
+                400,
+                {"error": f"Условие завершения не должно превышать {max_finish_length} символов."},
+            )
             return
 
         request_body = {
@@ -81,6 +102,16 @@ class Handler(SimpleHTTPRequestHandler):
                 "2) Заголовок «Основные пункты:» и нумерованный список из двух-пяти пунктов. "
                 "3) Заголовок «Итог:» и одно заключительное предложение. "
                 "Не используй лишние вступления."
+            )
+        stop_sequence = ""
+        if finish_mode == "instruction":
+            instructions.append(f"Условие завершения ответа: {finish_value}")
+        elif finish_mode == "sequence":
+            stop_sequence = finish_value
+            instructions.append(
+                "Заверши ответ точной последовательностью "
+                f"{json.dumps(stop_sequence, ensure_ascii=False)}. "
+                "После неё ничего не добавляй."
             )
         request_body["instructions"] = " ".join(instructions)
         body = json.dumps(request_body).encode()
@@ -118,6 +149,7 @@ class Handler(SimpleHTTPRequestHandler):
             for content in item.get("content", [])
             if content.get("type") == "output_text"
         )
+        answer = apply_stop_sequence(answer, stop_sequence)
         answer = truncate_words(answer, max_words)
         self.send_json(200, {"answer": answer})
 
