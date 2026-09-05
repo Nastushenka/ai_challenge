@@ -202,6 +202,13 @@
               <small>Прямой ответ, пошаговый, улучшенный промпт и группа экспертов</small>
             </span>
           </label>
+          <label class="compare-toggle" for="compare-temperature-mode">
+            <input id="compare-temperature-mode" type="checkbox">
+            <span>
+              <strong>Сравнить 3 значения temperature</strong>
+              <small>Один запрос при 0, 0.7 и 1.2 плюс сравнительный анализ</small>
+            </span>
+          </label>
           <label class="format-toggle standard-setting" for="use-format">
             <input id="use-format" type="checkbox" checked>
             <span>Использовать структурированный формат</span>
@@ -285,6 +292,7 @@
     const examples = document.querySelector('#examples');
     const useFormat = document.querySelector('#use-format');
     const compareMode = document.querySelector('#compare-mode');
+    const compareTemperatureMode = document.querySelector('#compare-temperature-mode');
     const maxWords = document.querySelector('#max-words');
     const useTemperature = document.querySelector('#use-temperature');
     const temperatureRange = document.querySelector('#temperature-range');
@@ -312,7 +320,7 @@
       messagesView.append(message);
     }
 
-    function addComparison(data) {
+    function addComparison(data, analysisHeading = 'Итоговый анализ четырёх решений') {
       const grid = document.createElement('div');
       grid.className = 'comparison-grid';
       for (const solution of data.solutions || []) {
@@ -344,7 +352,7 @@
       const analysis = document.createElement('article');
       analysis.className = 'analysis-card';
       const analysisTitle = document.createElement('h3');
-      analysisTitle.textContent = 'Итоговый анализ четырёх решений';
+      analysisTitle.textContent = analysisHeading;
       const analysisText = document.createElement('p');
       analysisText.textContent = data.analysis || 'Анализ не получен.';
       analysis.append(analysisTitle, analysisText);
@@ -352,12 +360,21 @@
       messagesView.append(grid);
     }
 
-    function updateCompareControl() {
-      const enabled = compareMode.checked;
+    function updateCompareControl(source) {
+      if (source === 'approaches' && compareMode.checked) {
+        compareTemperatureMode.checked = false;
+      }
+      if (source === 'temperature' && compareTemperatureMode.checked) {
+        compareMode.checked = false;
+        useTemperature.checked = false;
+      }
+      const enabled = compareMode.checked || compareTemperatureMode.checked;
       useFormat.disabled = enabled;
       finishMode.disabled = enabled;
       finishValue.disabled = enabled || finishMode.value === 'none';
+      useTemperature.disabled = compareTemperatureMode.checked;
       document.querySelector('.response-format').classList.toggle('compare-active', enabled);
+      updateTemperatureControl();
       resetDialogue();
     }
 
@@ -366,7 +383,7 @@
     }
 
     function updateTemperatureControl() {
-      const enabled = useTemperature.checked;
+      const enabled = useTemperature.checked && !useTemperature.disabled;
       temperatureRange.disabled = !enabled;
       temperatureValue.disabled = !enabled;
     }
@@ -411,7 +428,8 @@
     }
 
     finishMode.addEventListener('change', updateFinishControl);
-    compareMode.addEventListener('change', updateCompareControl);
+    compareMode.addEventListener('change', () => updateCompareControl('approaches'));
+    compareTemperatureMode.addEventListener('change', () => updateCompareControl('temperature'));
     newChat.addEventListener('click', () => {
       resetDialogue();
       prompt.value = '';
@@ -441,15 +459,19 @@
       const selectedTemperature = clampTemperature(temperatureValue.value);
       const selectedFinishMode = finishMode.value;
       const comparisonEnabled = compareMode.checked;
-      const dialogueMode = !comparisonEnabled && selectedFinishMode === 'dialogue';
+      const temperatureComparisonEnabled = compareTemperatureMode.checked;
+      const anyComparisonEnabled = comparisonEnabled || temperatureComparisonEnabled;
+      const dialogueMode = !anyComparisonEnabled && selectedFinishMode === 'dialogue';
       const history = dialogueMode ? [...messages] : [];
-      if (!dialogueMode || comparisonEnabled) resetDialogue();
+      if (!dialogueMode || anyComparisonEnabled) resetDialogue();
 
       send.disabled = true;
       result.className = 'visible loading';
       dialogueStatus.className = 'dialogue-status';
-      dialogueStatus.textContent = comparisonEnabled
-        ? 'Получаем четыре решения и итоговый анализ…'
+      dialogueStatus.textContent = anyComparisonEnabled
+        ? (temperatureComparisonEnabled
+          ? 'Сравниваем ответы при temperature 0, 0.7 и 1.2…'
+          : 'Получаем четыре решения и итоговый анализ…')
         : (dialogueMode ? 'Модель анализирует, достаточно ли данных…' : 'Модель формирует ответ…');
       addMessage('user', text);
       messages.push({ role: 'user', content: text });
@@ -462,6 +484,7 @@
           body: JSON.stringify({
             prompt: text,
             compare_mode: comparisonEnabled,
+            compare_temperature_mode: temperatureComparisonEnabled,
             use_temperature: useTemperature.checked,
             temperature: selectedTemperature,
             use_format: useFormat.checked,
@@ -474,10 +497,17 @@
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Не удалось получить ответ');
         result.className = 'visible';
-        if (comparisonEnabled) {
-          addComparison(data);
+        if (anyComparisonEnabled) {
+          addComparison(
+            data,
+            temperatureComparisonEnabled
+              ? 'Анализ точности, креативности и разнообразия'
+              : 'Итоговый анализ четырёх решений',
+          );
           dialogueStatus.className = 'dialogue-status complete';
-          dialogueStatus.textContent = '✓ Четыре решения и анализ готовы';
+          dialogueStatus.textContent = temperatureComparisonEnabled
+            ? '✓ Три значения temperature сравнены'
+            : '✓ Четыре решения и анализ готовы';
           return;
         }
         const answer = data.answer || 'Модель вернула пустой ответ.';
