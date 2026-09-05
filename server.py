@@ -56,8 +56,8 @@ class Handler(SimpleHTTPRequestHandler):
             prompt = payload.get("prompt", "").strip()
             use_format = payload.get("use_format", True) is not False
             max_words = int(payload.get("max_words", 200))
-            dialogue_mode = payload.get("dialogue_mode", False) is True
-            finish_condition = payload.get("finish_condition", "").strip()
+            finish_mode = payload.get("finish_mode", "none")
+            finish_value = payload.get("finish_value", "").strip()
             history = payload.get("history", [])
         except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
             self.send_json(400, {"error": "Некорректный запрос."})
@@ -69,11 +69,18 @@ class Handler(SimpleHTTPRequestHandler):
         if not 20 <= max_words <= 2000:
             self.send_json(400, {"error": "Укажите ограничение от 20 до 2000 слов."})
             return
-        if dialogue_mode and not finish_condition:
-            self.send_json(400, {"error": "Укажите, когда данных будет достаточно."})
+        if finish_mode not in {"none", "instruction", "sequence", "dialogue"}:
+            self.send_json(400, {"error": "Выберите допустимый режим завершения."})
             return
-        if len(finish_condition) > 500:
-            self.send_json(400, {"error": "Условие завершения не должно превышать 500 символов."})
+        if finish_mode != "none" and not finish_value:
+            self.send_json(400, {"error": "Укажите условие завершения ответа."})
+            return
+        max_finish_length = 100 if finish_mode == "sequence" else 500
+        if len(finish_value) > max_finish_length:
+            self.send_json(
+                400,
+                {"error": f"Условие завершения не должно превышать {max_finish_length} символов."},
+            )
             return
         if not isinstance(history, list) or len(history) > 20:
             self.send_json(400, {"error": "История диалога слишком длинная."})
@@ -96,6 +103,7 @@ class Handler(SimpleHTTPRequestHandler):
             messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": prompt})
 
+        dialogue_mode = finish_mode == "dialogue"
         request_body = {
             "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
             "input": messages if dialogue_mode else prompt,
@@ -108,10 +116,18 @@ class Handler(SimpleHTTPRequestHandler):
             instructions.append(
                 "Веди диалог до готовности результата. Если данных недостаточно, "
                 "задай ровно один короткий уточняющий вопрос и не давай итоговый ответ. "
-                f"Критерий готовности: {finish_condition} "
+                f"Критерий готовности: {finish_value} "
                 f"Когда критерий выполнен, начни ответ с маркера {FINAL_MARKER}, "
                 "затем сразу дай окончательный результат. Не используй маркер раньше "
                 "и не задавай после итогового результата вопросов."
+            )
+        elif finish_mode == "instruction":
+            instructions.append(f"Условие завершения ответа: {finish_value}")
+        elif finish_mode == "sequence":
+            instructions.append(
+                "Заверши ответ точной последовательностью "
+                f"{json.dumps(finish_value, ensure_ascii=False)}. "
+                "После неё ничего не добавляй."
             )
         if use_format:
             instructions.append(
@@ -159,7 +175,11 @@ class Handler(SimpleHTTPRequestHandler):
             if content.get("type") == "output_text"
         )
         complete = dialogue_mode and FINAL_MARKER in answer
-        answer = answer.replace(FINAL_MARKER, "", 1).strip()
+        if complete:
+            answer = answer.replace(FINAL_MARKER, "", 1).strip()
+        elif finish_mode == "sequence" and finish_value in answer:
+            answer = answer.split(finish_value, 1)[0].rstrip()
+            complete = True
         answer = truncate_words(answer, max_words)
         self.send_json(200, {"answer": answer, "complete": complete})
 
