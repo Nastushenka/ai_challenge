@@ -53,7 +53,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         body = json.dumps({
-            "model": os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
+            "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
             "input": prompt,
         }).encode()
         api_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
