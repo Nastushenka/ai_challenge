@@ -239,6 +239,10 @@ class Handler(SimpleHTTPRequestHandler):
             compare_temperature_mode = payload.get("compare_temperature_mode", False) is True
             use_temperature = payload.get("use_temperature", False) is True
             temperature = float(payload.get("temperature", 1.0)) if use_temperature else None
+            use_prompt_limit = payload.get("use_prompt_limit", False) is True
+            max_prompt_chars = (
+                int(payload.get("max_prompt_chars", 1000)) if use_prompt_limit else 12000
+            )
             finish_mode = payload.get("finish_mode", "none")
             finish_value = payload.get("finish_value", "").strip()
             history = payload.get("history", [])
@@ -246,8 +250,20 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Некорректный запрос."})
             return
 
-        if not prompt or len(prompt) > 12000:
-            self.send_json(400, {"error": "Введите от 1 до 12 000 символов."})
+        if not prompt:
+            self.send_json(400, {"error": "Введите запрос."})
+            return
+        if use_prompt_limit and not 1 <= max_prompt_chars <= 12000:
+            self.send_json(
+                400,
+                {"error": "Ограничение запроса должно быть от 1 до 12 000 символов."},
+            )
+            return
+        if len(prompt) > max_prompt_chars:
+            self.send_json(
+                400,
+                {"error": f"Запрос не должен превышать {max_prompt_chars} символов."},
+            )
             return
         if not 20 <= max_words <= 2000:
             self.send_json(400, {"error": "Укажите ограничение от 20 до 2000 слов."})
