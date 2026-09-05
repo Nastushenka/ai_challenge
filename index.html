@@ -68,6 +68,17 @@
     .format-toggle span { margin: 0; color: var(--ink); font-weight: 700; }
     .format-details { margin-top: 7px; transition: opacity .15s ease; }
     .response-format:has(input:not(:checked)) .format-details { opacity: .42; }
+    .limit-control {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line);
+    }
+    .limit-copy strong { display: block; margin: 0; }
+    .limit-copy small { color: var(--muted); }
+    .limit-control input {
+      width: 88px; border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px;
+      background: white; color: var(--ink); font: inherit; font-size: 13px; outline: none;
+    }
+    .limit-control input:focus { border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614; }
     form {
       overflow: hidden; border: 1px solid var(--line); border-radius: 24px;
       background: #ffffffe8; box-shadow: 0 22px 65px #252f481a, 0 2px 8px #252f480d;
@@ -138,8 +149,14 @@
               <li>«Основные пункты» — список из 2–5 пунктов</li>
               <li>«Итог» — одно заключительное предложение</li>
             </ol>
-            <span>До 200 слов, если вы не попросите подробнее.</span>
           </div>
+          <label class="limit-control" for="max-words">
+            <span class="limit-copy">
+              <strong>Максимум слов</strong>
+              <small>Применяется в любом режиме</small>
+            </span>
+            <input id="max-words" type="number" min="20" max="2000" step="10" value="200" inputmode="numeric">
+          </label>
         </div>
       </section>
 
@@ -170,6 +187,7 @@
     const send = document.querySelector('.send');
     const examples = document.querySelector('#examples');
     const useFormat = document.querySelector('#use-format');
+    const maxWords = document.querySelector('#max-words');
 
     examples.addEventListener('click', (event) => {
       if (event.target.matches('button')) {
@@ -189,6 +207,8 @@
       event.preventDefault();
       const text = prompt.value.trim();
       if (!text) return;
+      const wordLimit = Math.min(2000, Math.max(20, Number(maxWords.value) || 200));
+      maxWords.value = wordLimit;
 
       send.disabled = true;
       result.className = 'visible loading';
@@ -198,7 +218,11 @@
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: text, use_format: useFormat.checked }),
+          body: JSON.stringify({
+            prompt: text,
+            use_format: useFormat.checked,
+            max_words: wordLimit,
+          }),
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Не удалось получить ответ');
