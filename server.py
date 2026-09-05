@@ -37,13 +37,16 @@ def truncate_words(text, max_words):
     return text[:cut_at].rstrip(" ,;:.") + "…"
 
 
-def call_model(api_key, input_value, instructions=None):
+def call_model(api_key, input_value, instructions=None, temperature=None):
     request_body = {
         "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
         "input": input_value,
     }
     if instructions:
         request_body["instructions"] = instructions
+    if temperature is not None:
+        request_body["temperature"] = temperature
+        request_body["reasoning"] = {"effort": "none"}
     body = json.dumps(request_body).encode()
     api_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
     request = Request(
@@ -75,9 +78,9 @@ def call_model(api_key, input_value, instructions=None):
     )
 
 
-def compare_solutions(api_key, prompt, max_words):
+def compare_solutions(api_key, prompt, max_words, temperature=None):
     def direct_solution():
-        return call_model(api_key, prompt)
+        return call_model(api_key, prompt, temperature=temperature)
 
     def step_by_step_solution():
         return call_model(
@@ -90,6 +93,7 @@ def compare_solutions(api_key, prompt, max_words):
             "и рассмотри возможную альтернативу; 5) отдельно сформулируй окончательный "
             "ответ. Не выдумывай отсутствующие данные: явно отмечай неоднозначность. "
             f"Отвечай на русском языке и не превышай {max_words} слов.",
+            temperature,
         )
 
     def prompt_engineering_solution():
@@ -105,8 +109,9 @@ def compare_solutions(api_key, prompt, max_words):
             "от предположений, рассмотреть альтернативы и дать однозначный итог. "
             "Промпт должен быть на русском языке и подходить для использования без "
             "дополнительного контекста.",
+            temperature,
         )
-        answer = call_model(api_key, generated_prompt)
+        answer = call_model(api_key, generated_prompt, temperature=temperature)
         return generated_prompt, answer
 
     def expert_group_solution():
@@ -116,6 +121,7 @@ def compare_solutions(api_key, prompt, max_words):
             "Создай группу из трёх экспертов: аналитика, инженера и критика. "
             "Пусть каждый независимо предложит своё решение задачи и объяснит ход мысли. "
             f"Чётко раздели ответы экспертов. Отвечай на русском языке, до {max_words} слов.",
+            temperature,
         )
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -164,6 +170,7 @@ def compare_solutions(api_key, prompt, max_words):
         "Проанализируй четыре решения на русском языке. Сравни их корректность, "
         "полноту, понятность и надёжность. Укажи совпадения и противоречия, выбери "
         f"лучший подход и сформулируй итоговый вывод. Не превышай {max_words} слов.",
+        temperature,
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
@@ -189,6 +196,8 @@ class Handler(SimpleHTTPRequestHandler):
             use_format = payload.get("use_format", True) is not False
             max_words = int(payload.get("max_words", 200))
             compare_mode = payload.get("compare_mode", False) is True
+            use_temperature = payload.get("use_temperature", False) is True
+            temperature = float(payload.get("temperature", 1.0)) if use_temperature else None
             finish_mode = payload.get("finish_mode", "none")
             finish_value = payload.get("finish_value", "").strip()
             history = payload.get("history", [])
@@ -202,9 +211,12 @@ class Handler(SimpleHTTPRequestHandler):
         if not 20 <= max_words <= 2000:
             self.send_json(400, {"error": "Укажите ограничение от 20 до 2000 слов."})
             return
+        if temperature is not None and not 0 <= temperature <= 2:
+            self.send_json(400, {"error": "Temperature должна быть от 0 до 2."})
+            return
         if compare_mode:
             try:
-                comparison = compare_solutions(api_key, prompt, max_words)
+                comparison = compare_solutions(api_key, prompt, max_words, temperature)
             except HTTPError as error:
                 try:
                     message = json.load(error).get("error", {}).get("message")
@@ -287,6 +299,7 @@ class Handler(SimpleHTTPRequestHandler):
                 api_key,
                 messages if dialogue_mode else prompt,
                 " ".join(instructions),
+                temperature,
             )
         except HTTPError as error:
             try:
