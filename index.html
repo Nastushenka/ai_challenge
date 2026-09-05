@@ -67,7 +67,15 @@
     .format-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
     .format-toggle span { margin: 0; color: var(--ink); font-weight: 700; }
     .format-details { margin-top: 7px; transition: opacity .15s ease; }
-    .response-format:has(input:not(:checked)) .format-details { opacity: .42; }
+    .response-format:has(#use-format:not(:checked)) .format-details { opacity: .42; }
+    .compare-toggle {
+      display: flex; align-items: flex-start; gap: 9px; margin-bottom: 11px; padding-bottom: 11px;
+      border-bottom: 1px solid var(--line); cursor: pointer;
+    }
+    .compare-toggle input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
+    .compare-toggle strong { margin: 0; }
+    .compare-toggle small { display: block; margin-top: 2px; color: var(--muted); }
+    .response-format.compare-active .standard-setting { opacity: .42; }
     .limit-control {
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
       margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line);
@@ -136,12 +144,24 @@
     .message { max-width: 88%; padding: 11px 13px; border-radius: 15px; white-space: pre-wrap; }
     .message.user { justify-self: end; background: var(--accent); color: white; border-bottom-right-radius: 5px; }
     .message.assistant { justify-self: start; background: #f0f2f7; color: var(--ink); border-bottom-left-radius: 5px; }
+    .comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .solution-card, .analysis-card {
+      min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 16px;
+      background: #fff; color: var(--ink);
+    }
+    .solution-card h3, .analysis-card h3 { margin: 0 0 9px; font-size: 14px; }
+    .solution-card p, .analysis-card p { margin: 0; white-space: pre-wrap; }
+    .solution-card details { margin-bottom: 10px; border-radius: 10px; background: #f5f6fa; padding: 8px 10px; }
+    .solution-card summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 700; }
+    .solution-card pre { margin: 8px 0 0; white-space: pre-wrap; font: inherit; font-size: 12px; }
+    .analysis-card { grid-column: 1 / -1; border-color: #b8b8ef; background: var(--accent-soft); }
     footer { text-align: center; }
     @media (max-width: 560px) {
       .shell { padding-top: 20px; }
       main { padding: 40px 0; }
       .hint { max-width: 210px; }
       .model { padding-inline: 9px; }
+      .comparison-grid { grid-template-columns: 1fr; }
     }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
@@ -162,11 +182,18 @@
         <h1>О чём хотите спросить?</h1>
         <p>Напишите вопрос — интерфейс отправит его в модель и покажет ответ.</p>
         <div class="response-format">
-          <label class="format-toggle" for="use-format">
+          <label class="compare-toggle" for="compare-mode">
+            <input id="compare-mode" type="checkbox">
+            <span>
+              <strong>Сравнить 4 подхода к решению</strong>
+              <small>Прямой ответ, пошаговый, улучшенный промпт и группа экспертов</small>
+            </span>
+          </label>
+          <label class="format-toggle standard-setting" for="use-format">
             <input id="use-format" type="checkbox" checked>
             <span>Использовать структурированный формат</span>
           </label>
-          <div class="format-details">
+          <div class="format-details standard-setting">
             <ol>
               <li>«Краткий ответ» — 1–2 предложения</li>
               <li>«Основные пункты» — список из 2–5 пунктов</li>
@@ -180,7 +207,7 @@
             </span>
             <input id="max-words" type="number" min="20" max="2000" step="10" value="200" inputmode="numeric">
           </label>
-          <div class="finish-control">
+          <div class="finish-control standard-setting">
             <strong>Диалог до готового результата</strong>
             <div class="finish-row">
               <label for="finish-mode" hidden>Режим диалога</label>
@@ -231,6 +258,7 @@
     const send = document.querySelector('.send');
     const examples = document.querySelector('#examples');
     const useFormat = document.querySelector('#use-format');
+    const compareMode = document.querySelector('#compare-mode');
     const maxWords = document.querySelector('#max-words');
     const finishMode = document.querySelector('#finish-mode');
     const finishValue = document.querySelector('#finish-value');
@@ -253,6 +281,49 @@
       message.className = `message ${role}`;
       message.textContent = text;
       messagesView.append(message);
+    }
+
+    function addComparison(data) {
+      const grid = document.createElement('div');
+      grid.className = 'comparison-grid';
+      for (const solution of data.solutions || []) {
+        const card = document.createElement('article');
+        card.className = 'solution-card';
+        const title = document.createElement('h3');
+        title.textContent = solution.title;
+        card.append(title);
+        if (solution.generated_prompt) {
+          const details = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.textContent = 'Показать созданный промпт';
+          const generated = document.createElement('pre');
+          generated.textContent = solution.generated_prompt;
+          details.append(summary, generated);
+          card.append(details);
+        }
+        const answer = document.createElement('p');
+        answer.textContent = solution.answer;
+        card.append(answer);
+        grid.append(card);
+      }
+      const analysis = document.createElement('article');
+      analysis.className = 'analysis-card';
+      const analysisTitle = document.createElement('h3');
+      analysisTitle.textContent = 'Итоговый анализ четырёх решений';
+      const analysisText = document.createElement('p');
+      analysisText.textContent = data.analysis || 'Анализ не получен.';
+      analysis.append(analysisTitle, analysisText);
+      grid.append(analysis);
+      messagesView.append(grid);
+    }
+
+    function updateCompareControl() {
+      const enabled = compareMode.checked;
+      useFormat.disabled = enabled;
+      finishMode.disabled = enabled;
+      finishValue.disabled = enabled || finishMode.value === 'none';
+      document.querySelector('.response-format').classList.toggle('compare-active', enabled);
+      resetDialogue();
     }
 
     function updateFinishControl() {
@@ -281,6 +352,7 @@
     }
 
     finishMode.addEventListener('change', updateFinishControl);
+    compareMode.addEventListener('change', updateCompareControl);
     newChat.addEventListener('click', () => {
       resetDialogue();
       prompt.value = '';
@@ -308,14 +380,17 @@
       const wordLimit = Math.min(2000, Math.max(20, Number(maxWords.value) || 200));
       maxWords.value = wordLimit;
       const selectedFinishMode = finishMode.value;
-      const dialogueMode = selectedFinishMode === 'dialogue';
+      const comparisonEnabled = compareMode.checked;
+      const dialogueMode = !comparisonEnabled && selectedFinishMode === 'dialogue';
       const history = dialogueMode ? [...messages] : [];
-      if (!dialogueMode) resetDialogue();
+      if (!dialogueMode || comparisonEnabled) resetDialogue();
 
       send.disabled = true;
       result.className = 'visible loading';
       dialogueStatus.className = 'dialogue-status';
-      dialogueStatus.textContent = dialogueMode ? 'Модель анализирует, достаточно ли данных…' : 'Модель формирует ответ…';
+      dialogueStatus.textContent = comparisonEnabled
+        ? 'Получаем четыре решения и итоговый анализ…'
+        : (dialogueMode ? 'Модель анализирует, достаточно ли данных…' : 'Модель формирует ответ…');
       addMessage('user', text);
       messages.push({ role: 'user', content: text });
       prompt.value = '';
@@ -326,6 +401,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: text,
+            compare_mode: comparisonEnabled,
             use_format: useFormat.checked,
             max_words: wordLimit,
             finish_mode: selectedFinishMode,
@@ -336,6 +412,12 @@
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Не удалось получить ответ');
         result.className = 'visible';
+        if (comparisonEnabled) {
+          addComparison(data);
+          dialogueStatus.className = 'dialogue-status complete';
+          dialogueStatus.textContent = '✓ Четыре решения и анализ готовы';
+          return;
+        }
         const answer = data.answer || 'Модель вернула пустой ответ.';
         addMessage('assistant', answer);
         messages.push({ role: 'assistant', content: answer });
