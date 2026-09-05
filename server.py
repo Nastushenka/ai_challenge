@@ -44,6 +44,7 @@ class Handler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
             prompt = payload.get("prompt", "").strip()
+            use_format = payload.get("use_format", True) is not False
         except (ValueError, AttributeError, json.JSONDecodeError):
             self.send_json(400, {"error": "Некорректный запрос."})
             return
@@ -52,18 +53,20 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Введите от 1 до 12 000 символов."})
             return
 
-        body = json.dumps({
+        request_body = {
             "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
             "input": prompt,
-            "instructions": (
+        }
+        if use_format:
+            request_body["instructions"] = (
                 "Отвечай на русском языке и строго соблюдай формат из трёх блоков. "
                 "1) Заголовок «Краткий ответ:» и один-два предложения. "
                 "2) Заголовок «Основные пункты:» и нумерованный список из двух-пяти пунктов. "
                 "3) Заголовок «Итог:» и одно заключительное предложение. "
                 "Не используй вступления и не превышай 200 слов, если пользователь "
                 "явно не попросил подробный ответ."
-            ),
-        }).encode()
+            )
+        body = json.dumps(request_body).encode()
         api_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
         request = Request(
             f"{api_url}/responses",
