@@ -186,6 +186,8 @@
               <label for="finish-mode" hidden>Режим диалога</label>
               <select id="finish-mode">
                 <option value="none">Обычный ответ</option>
+                <option value="instruction">Явная инструкция</option>
+                <option value="sequence">Stop sequence</option>
                 <option value="dialogue" selected>Уточнять до готовности</option>
               </select>
               <label for="finish-value" hidden>Критерий готовности</label>
@@ -254,15 +256,27 @@
     }
 
     function updateFinishControl() {
-      const isDialogue = finishMode.value === 'dialogue';
-      finishValue.disabled = !isDialogue;
-      finishValue.required = isDialogue;
-      finishValue.placeholder = isDialogue
-        ? 'Например: когда известны блюдо, ингредиенты и число порций'
-        : 'Включите режим уточнений';
-      finishHelp.textContent = isDialogue
-        ? 'Модель задаёт по одному вопросу, затем выдаёт итог.'
-        : 'Модель отвечает сразу на каждый новый запрос.';
+      const mode = finishMode.value;
+      finishValue.disabled = mode === 'none';
+      finishValue.required = mode !== 'none';
+      finishValue.maxLength = mode === 'sequence' ? 100 : 500;
+      if (mode === 'dialogue') {
+        finishValue.value = 'Когда собраны все данные, необходимые для точного и полезного результата';
+        finishValue.placeholder = 'Например: когда известны блюдо, ингредиенты и число порций';
+        finishHelp.textContent = 'Модель задаёт по одному вопросу, затем выдаёт итог.';
+      } else if (mode === 'instruction') {
+        finishValue.value = 'Заверши ответ кратким выводом и ничего после него не добавляй.';
+        finishValue.placeholder = 'Например: заверши ответ кратким выводом';
+        finishHelp.textContent = 'Условие будет добавлено к инструкции модели.';
+      } else if (mode === 'sequence') {
+        finishValue.value = '<END>';
+        finishValue.placeholder = 'Например: <END>';
+        finishHelp.textContent = 'Ответ остановится на маркере; сам маркер не показывается.';
+      } else {
+        finishValue.value = '';
+        finishValue.placeholder = 'Выберите режим завершения';
+        finishHelp.textContent = 'Модель отвечает сразу на каждый новый запрос.';
+      }
       resetDialogue();
     }
 
@@ -293,7 +307,8 @@
       if (!text) return;
       const wordLimit = Math.min(2000, Math.max(20, Number(maxWords.value) || 200));
       maxWords.value = wordLimit;
-      const dialogueMode = finishMode.value === 'dialogue';
+      const selectedFinishMode = finishMode.value;
+      const dialogueMode = selectedFinishMode === 'dialogue';
       const history = dialogueMode ? [...messages] : [];
       if (!dialogueMode) resetDialogue();
 
@@ -313,8 +328,8 @@
             prompt: text,
             use_format: useFormat.checked,
             max_words: wordLimit,
-            dialogue_mode: dialogueMode,
-            finish_condition: finishValue.value.trim(),
+            finish_mode: selectedFinishMode,
+            finish_value: finishValue.value.trim(),
             history,
           }),
         });
@@ -325,9 +340,15 @@
         addMessage('assistant', answer);
         messages.push({ role: 'assistant', content: answer });
         dialogueStatus.className = data.complete ? 'dialogue-status complete' : 'dialogue-status';
-        dialogueStatus.textContent = dialogueMode
-          ? (data.complete ? '✓ Данных достаточно — итог готов' : 'Нужно уточнение')
-          : 'Ответ готов';
+        if (dialogueMode) {
+          dialogueStatus.textContent = data.complete ? '✓ Данных достаточно — итог готов' : 'Нужно уточнение';
+        } else if (selectedFinishMode === 'sequence') {
+          dialogueStatus.textContent = data.complete ? '✓ Stop sequence достигнута' : 'Ответ готов — маркер не встретился';
+        } else if (selectedFinishMode === 'instruction') {
+          dialogueStatus.textContent = 'Ответ сформирован по инструкции';
+        } else {
+          dialogueStatus.textContent = 'Ответ готов';
+        }
       } catch (error) {
         result.className = 'visible error';
         dialogueStatus.textContent = error.message || 'Не удалось получить ответ.';
