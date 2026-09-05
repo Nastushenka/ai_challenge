@@ -57,8 +57,15 @@ def call_model(api_key, input_value, instructions=None):
     ssl_context = ssl.create_default_context(
         cafile=str(SYSTEM_CA_FILE) if SYSTEM_CA_FILE.exists() else None
     )
-    with urlopen(request, timeout=90, context=ssl_context) as response:
-        result = json.load(response)
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=90, context=ssl_context) as response:
+                result = json.load(response)
+            break
+        except HTTPError as error:
+            if attempt == 0 and error.code in {429, 500, 502, 503, 504}:
+                continue
+            raise
     return "".join(
         content.get("text", "")
         for item in result.get("output", [])
@@ -76,15 +83,28 @@ def compare_solutions(api_key, prompt, max_words):
         return call_model(
             api_key,
             prompt,
-            f"Решай пошагово. Отвечай на русском языке и не превышай {max_words} слов.",
+            "Решай пошагово и показывай проверяемую логику решения. "
+            "Структура ответа: 1) кратко сформулируй цель; 2) перечисли исходные "
+            "факты и ограничения; 3) выполни пронумерованные шаги, объясняя, почему "
+            "каждый шаг следует из условий; 4) проверь результат по всем ограничениям "
+            "и рассмотри возможную альтернативу; 5) отдельно сформулируй окончательный "
+            "ответ. Не выдумывай отсутствующие данные: явно отмечай неоднозначность. "
+            f"Отвечай на русском языке и не превышай {max_words} слов.",
         )
 
     def prompt_engineering_solution():
         generated_prompt = call_model(
             api_key,
             prompt,
-            "Составь на русском языке точный и самодостаточный промпт для решения "
-            "задачи пользователя. Верни только готовый промпт без пояснений и решения.",
+            "Ты — промпт-инженер. Преобразуй задачу пользователя в точный, "
+            "самодостаточный промпт для другой языковой модели. Не решай исходную "
+            "задачу и не подсказывай ответ. Верни только готовый промпт со следующими "
+            "разделами: «Роль», «Задача», «Исходные данные», «Ограничения», "
+            "«Метод решения и самопроверки», «Формат ответа». Сохрани все значимые "
+            "детали исходной задачи. Потребуй проверить каждое условие, отделить факты "
+            "от предположений, рассмотреть альтернативы и дать однозначный итог. "
+            "Промпт должен быть на русском языке и подходить для использования без "
+            "дополнительного контекста.",
         )
         answer = call_model(api_key, generated_prompt)
         return generated_prompt, answer
@@ -105,15 +125,31 @@ def compare_solutions(api_key, prompt, max_words):
         experts_future = executor.submit(expert_group_solution)
         generated_prompt, prompt_answer = prompt_future.result()
         solutions = [
-            {"id": "direct", "title": "1. Прямой ответ", "answer": direct_future.result()},
-            {"id": "steps", "title": "2. Решение пошагово", "answer": steps_future.result()},
+            {
+                "id": "direct",
+                "title": "1. Прямой ответ",
+                "description": "Только исходная задача, без дополнительных инструкций.",
+                "answer": direct_future.result(),
+            },
+            {
+                "id": "steps",
+                "title": "2. Проверяемое пошаговое решение",
+                "description": "Факты, ограничения, обоснованные шаги, проверка и итог.",
+                "answer": steps_future.result(),
+            },
             {
                 "id": "prompt",
-                "title": "3. Сначала создать промпт",
+                "title": "3. Решение через улучшенный промпт",
+                "description": "Сначала создаётся самодостаточный промпт, затем он решает задачу.",
                 "generated_prompt": generated_prompt,
                 "answer": prompt_answer,
             },
-            {"id": "experts", "title": "4. Группа экспертов", "answer": experts_future.result()},
+            {
+                "id": "experts",
+                "title": "4. Группа экспертов",
+                "description": "Независимые позиции аналитика, инженера и критика.",
+                "answer": experts_future.result(),
+            },
         ]
 
     for solution in solutions:
