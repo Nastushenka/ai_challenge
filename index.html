@@ -151,6 +151,7 @@
     }
     .solution-card h3, .analysis-card h3 { margin: 0 0 9px; font-size: 14px; }
     .solution-card p, .analysis-card p { margin: 0; white-space: pre-wrap; }
+    .solution-card .solution-note { margin: -4px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .solution-card details { margin-bottom: 10px; border-radius: 10px; background: #f5f6fa; padding: 8px 10px; }
     .solution-card summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 700; }
     .solution-card pre { margin: 8px 0 0; white-space: pre-wrap; font: inherit; font-size: 12px; }
@@ -292,6 +293,12 @@
         const title = document.createElement('h3');
         title.textContent = solution.title;
         card.append(title);
+        if (solution.description) {
+          const description = document.createElement('p');
+          description.className = 'solution-note';
+          description.textContent = solution.description;
+          card.append(description);
+        }
         if (solution.generated_prompt) {
           const details = document.createElement('details');
           const summary = document.createElement('summary');
