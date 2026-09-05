@@ -1,4 +1,4 @@
-# LLM Chat — веб-интерфейс DeepSeek
+# Nastia Chat — веб-интерфейс DeepSeek
 
 Сторонние библиотеки не нужны.
 
