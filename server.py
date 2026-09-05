@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).parent
 SYSTEM_CA_FILE = Path("/etc/ssl/cert.pem")
+FINAL_MARKER = "[[READY]]"
 
 
 def load_local_env():
@@ -35,12 +36,6 @@ def truncate_words(text, max_words):
     return text[:cut_at].rstrip(" ,;:.") + "…"
 
 
-def apply_stop_sequence(text, stop_sequence):
-    if not stop_sequence or stop_sequence not in text:
-        return text
-    return text.split(stop_sequence, 1)[0].rstrip()
-
-
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -61,8 +56,9 @@ class Handler(SimpleHTTPRequestHandler):
             prompt = payload.get("prompt", "").strip()
             use_format = payload.get("use_format", True) is not False
             max_words = int(payload.get("max_words", 200))
-            finish_mode = payload.get("finish_mode", "none")
-            finish_value = payload.get("finish_value", "").strip()
+            dialogue_mode = payload.get("dialogue_mode", False) is True
+            finish_condition = payload.get("finish_condition", "").strip()
+            history = payload.get("history", [])
         except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
             self.send_json(400, {"error": "Некорректный запрос."})
             return
@@ -73,45 +69,58 @@ class Handler(SimpleHTTPRequestHandler):
         if not 20 <= max_words <= 2000:
             self.send_json(400, {"error": "Укажите ограничение от 20 до 2000 слов."})
             return
-        if finish_mode not in {"none", "instruction", "sequence"}:
-            self.send_json(400, {"error": "Выберите допустимое условие завершения."})
+        if dialogue_mode and not finish_condition:
+            self.send_json(400, {"error": "Укажите, когда данных будет достаточно."})
             return
-        if finish_mode != "none" and not finish_value:
-            self.send_json(400, {"error": "Укажите условие завершения ответа."})
+        if len(finish_condition) > 500:
+            self.send_json(400, {"error": "Условие завершения не должно превышать 500 символов."})
             return
-        max_finish_length = 500 if finish_mode == "instruction" else 100
-        if len(finish_value) > max_finish_length:
-            self.send_json(
-                400,
-                {"error": f"Условие завершения не должно превышать {max_finish_length} символов."},
-            )
+        if not isinstance(history, list) or len(history) > 20:
+            self.send_json(400, {"error": "История диалога слишком длинная."})
             return
+
+        messages = []
+        for item in history:
+            if not isinstance(item, dict):
+                self.send_json(400, {"error": "Некорректная история диалога."})
+                return
+            role = item.get("role")
+            content = item.get("content")
+            if role not in {"user", "assistant"} or not isinstance(content, str):
+                self.send_json(400, {"error": "Некорректная история диалога."})
+                return
+            content = content.strip()
+            if not content or len(content) > 12000:
+                self.send_json(400, {"error": "Некорректная история диалога."})
+                return
+            messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": prompt})
 
         request_body = {
             "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
-            "input": prompt,
+            "input": messages if dialogue_mode else prompt,
         }
         instructions = [
             f"Отвечай на русском языке. Весь ответ, включая заголовки, должен "
             f"содержать не более {max_words} слов."
         ]
+        if dialogue_mode:
+            instructions.append(
+                "Веди диалог до готовности результата. Если данных недостаточно, "
+                "задай ровно один короткий уточняющий вопрос и не давай итоговый ответ. "
+                f"Критерий готовности: {finish_condition} "
+                f"Когда критерий выполнен, начни ответ с маркера {FINAL_MARKER}, "
+                "затем сразу дай окончательный результат. Не используй маркер раньше "
+                "и не задавай после итогового результата вопросов."
+            )
         if use_format:
             instructions.append(
-                "Строго соблюдай формат из трёх блоков. "
+                "Если ты задаёшь уточняющий вопрос, не применяй к нему шаблон ответа. "
+                "Для окончательного результата строго соблюдай формат из трёх блоков. "
                 "1) Заголовок «Краткий ответ:» и один-два предложения. "
                 "2) Заголовок «Основные пункты:» и нумерованный список из двух-пяти пунктов. "
                 "3) Заголовок «Итог:» и одно заключительное предложение. "
                 "Не используй лишние вступления."
-            )
-        stop_sequence = ""
-        if finish_mode == "instruction":
-            instructions.append(f"Условие завершения ответа: {finish_value}")
-        elif finish_mode == "sequence":
-            stop_sequence = finish_value
-            instructions.append(
-                "Заверши ответ точной последовательностью "
-                f"{json.dumps(stop_sequence, ensure_ascii=False)}. "
-                "После неё ничего не добавляй."
             )
         request_body["instructions"] = " ".join(instructions)
         body = json.dumps(request_body).encode()
@@ -149,9 +158,10 @@ class Handler(SimpleHTTPRequestHandler):
             for content in item.get("content", [])
             if content.get("type") == "output_text"
         )
-        answer = apply_stop_sequence(answer, stop_sequence)
+        complete = dialogue_mode and FINAL_MARKER in answer
+        answer = answer.replace(FINAL_MARKER, "", 1).strip()
         answer = truncate_words(answer, max_words)
-        self.send_json(200, {"answer": answer})
+        self.send_json(200, {"answer": answer, "complete": complete})
 
     def send_json(self, status, payload):
         data = json.dumps(payload, ensure_ascii=False).encode()
