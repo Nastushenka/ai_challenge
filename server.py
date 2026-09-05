@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import ssl
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,6 +27,14 @@ def load_local_env():
 load_local_env()
 
 
+def truncate_words(text, max_words):
+    words = list(re.finditer(r"\S+", text))
+    if len(words) <= max_words:
+        return text
+    cut_at = words[max_words - 1].end()
+    return text[:cut_at].rstrip(" ,;:.") + "…"
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -45,27 +54,35 @@ class Handler(SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             prompt = payload.get("prompt", "").strip()
             use_format = payload.get("use_format", True) is not False
-        except (ValueError, AttributeError, json.JSONDecodeError):
+            max_words = int(payload.get("max_words", 200))
+        except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
             self.send_json(400, {"error": "Некорректный запрос."})
             return
 
         if not prompt or len(prompt) > 12000:
             self.send_json(400, {"error": "Введите от 1 до 12 000 символов."})
             return
+        if not 20 <= max_words <= 2000:
+            self.send_json(400, {"error": "Укажите ограничение от 20 до 2000 слов."})
+            return
 
         request_body = {
             "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
             "input": prompt,
         }
+        instructions = [
+            f"Отвечай на русском языке. Весь ответ, включая заголовки, должен "
+            f"содержать не более {max_words} слов."
+        ]
         if use_format:
-            request_body["instructions"] = (
-                "Отвечай на русском языке и строго соблюдай формат из трёх блоков. "
+            instructions.append(
+                "Строго соблюдай формат из трёх блоков. "
                 "1) Заголовок «Краткий ответ:» и один-два предложения. "
                 "2) Заголовок «Основные пункты:» и нумерованный список из двух-пяти пунктов. "
                 "3) Заголовок «Итог:» и одно заключительное предложение. "
-                "Не используй вступления и не превышай 200 слов, если пользователь "
-                "явно не попросил подробный ответ."
+                "Не используй лишние вступления."
             )
+        request_body["instructions"] = " ".join(instructions)
         body = json.dumps(request_body).encode()
         api_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
         request = Request(
@@ -101,6 +118,7 @@ class Handler(SimpleHTTPRequestHandler):
             for content in item.get("content", [])
             if content.get("type") == "output_text"
         )
+        answer = truncate_words(answer, max_words)
         self.send_json(200, {"answer": answer})
 
     def send_json(self, status, payload):
