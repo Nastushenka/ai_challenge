@@ -55,6 +55,11 @@ class Handler(SimpleHTTPRequestHandler):
         body = json.dumps({
             "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
             "input": prompt,
+            "instructions": (
+                "Отвечай на русском языке. Формат ответа: сначала дай краткий "
+                "прямой вывод в одном-двух предложениях. Если нужны подробности, "
+                "добавь нумерованный список. Не используй лишние вводные фразы."
+            ),
         }).encode()
         api_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
         request = Request(
