@@ -30,6 +30,8 @@ load_local_env()
 
 
 def truncate_words(text, max_words):
+    if max_words is None:
+        return text
     words = list(re.finditer(r"\S+", text))
     if len(words) <= max_words:
         return text
@@ -79,6 +81,10 @@ def call_model(api_key, input_value, instructions=None, temperature=None):
 
 
 def compare_solutions(api_key, prompt, max_words, temperature=None):
+    limit_instruction = (
+        f" Не превышай {max_words} слов." if max_words is not None else ""
+    )
+
     def direct_solution():
         return call_model(api_key, prompt, temperature=temperature)
 
@@ -92,7 +98,7 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
             "каждый шаг следует из условий; 4) проверь результат по всем ограничениям "
             "и рассмотри возможную альтернативу; 5) отдельно сформулируй окончательный "
             "ответ. Не выдумывай отсутствующие данные: явно отмечай неоднозначность. "
-            f"Отвечай на русском языке и не превышай {max_words} слов.",
+            f"Отвечай на русском языке.{limit_instruction}",
             temperature,
         )
 
@@ -120,7 +126,7 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
             prompt,
             "Создай группу из трёх экспертов: аналитика, инженера и критика. "
             "Пусть каждый независимо предложит своё решение задачи и объяснит ход мысли. "
-            f"Чётко раздели ответы экспертов. Отвечай на русском языке, до {max_words} слов.",
+            f"Чётко раздели ответы экспертов. Отвечай на русском языке.{limit_instruction}",
             temperature,
         )
 
@@ -169,13 +175,16 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
         f"Исходная задача:\n{prompt}\n\nПолученные решения:\n{comparison_text}",
         "Проанализируй четыре решения на русском языке. Сравни их корректность, "
         "полноту, понятность и надёжность. Укажи совпадения и противоречия, выбери "
-        f"лучший подход и сформулируй итоговый вывод. Не превышай {max_words} слов.",
+        f"лучший подход и сформулируй итоговый вывод.{limit_instruction}",
         temperature,
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
 
 def compare_temperatures(api_key, prompt, max_words):
+    limit_instruction = (
+        f" Не превышай {max_words} слов." if max_words is not None else ""
+    )
     settings = [
         ("temperature-0", "Temperature = 0", 0.0, "Максимальная стабильность и фокус."),
         ("temperature-07", "Temperature = 0.7", 0.7, "Баланс точности и вариативности."),
@@ -209,7 +218,7 @@ def compare_temperatures(api_key, prompt, max_words):
         "3) разнообразие идей и формулировок. Отдельно отметь сильные и слабые "
         "стороны каждого значения. В конце сделай практический вывод, для каких "
         "типов задач лучше подходят temperature 0, 0.7 и 1.2. Отвечай на русском "
-        f"языке, структурированно и не превышай {max_words} слов.",
+        f"языке и структурированно.{limit_instruction}",
         0.0,
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
@@ -234,7 +243,8 @@ class Handler(SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             prompt = payload.get("prompt", "").strip()
             use_format = payload.get("use_format", True) is not False
-            max_words = int(payload.get("max_words", 200))
+            use_word_limit = payload.get("use_word_limit", False) is True
+            max_words = int(payload.get("max_words", 200)) if use_word_limit else None
             compare_mode = payload.get("compare_mode", False) is True
             compare_temperature_mode = payload.get("compare_temperature_mode", False) is True
             use_temperature = payload.get("use_temperature", False) is True
@@ -265,7 +275,7 @@ class Handler(SimpleHTTPRequestHandler):
                 {"error": f"Запрос не должен превышать {max_prompt_chars} символов."},
             )
             return
-        if not 20 <= max_words <= 2000:
+        if use_word_limit and not 20 <= max_words <= 2000:
             self.send_json(400, {"error": "Укажите ограничение от 20 до 2000 слов."})
             return
         if temperature is not None and not 0 <= temperature <= 2:
@@ -339,10 +349,12 @@ class Handler(SimpleHTTPRequestHandler):
         messages.append({"role": "user", "content": prompt})
 
         dialogue_mode = finish_mode == "dialogue"
-        instructions = [
-            f"Отвечай на русском языке. Весь ответ, включая заголовки, должен "
-            f"содержать не более {max_words} слов."
-        ]
+        instructions = ["Отвечай на русском языке."]
+        if max_words is not None:
+            instructions.append(
+                f"Весь ответ, включая заголовки, должен содержать не более "
+                f"{max_words} слов."
+            )
         if dialogue_mode:
             instructions.append(
                 "Веди диалог до готовности результата. Если данных недостаточно, "
