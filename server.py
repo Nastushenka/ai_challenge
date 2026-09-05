@@ -175,6 +175,46 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
 
+def compare_temperatures(api_key, prompt, max_words):
+    settings = [
+        ("temperature-0", "Temperature = 0", 0.0, "Максимальная стабильность и фокус."),
+        ("temperature-07", "Temperature = 0.7", 0.7, "Баланс точности и вариативности."),
+        ("temperature-12", "Temperature = 1.2", 1.2, "Больше разнообразия и неожиданных идей."),
+    ]
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            value: executor.submit(call_model, api_key, prompt, None, value)
+            for _, _, value, _ in settings
+        }
+        solutions = [
+            {
+                "id": solution_id,
+                "title": title,
+                "description": description,
+                "temperature": value,
+                "answer": truncate_words(futures[value].result(), max_words),
+            }
+            for solution_id, title, value, description in settings
+        ]
+
+    comparison_text = "\n\n".join(
+        f"{solution['title']}\n{solution['answer']}" for solution in solutions
+    )
+    analysis = call_model(
+        api_key,
+        f"Исходная задача:\n{prompt}\n\nОтветы:\n{comparison_text}",
+        "Сравни три ответа, созданные с разными значениями temperature. "
+        "Проанализируй каждый по критериям: 1) точность, 2) креативность, "
+        "3) разнообразие идей и формулировок. Отдельно отметь сильные и слабые "
+        "стороны каждого значения. В конце сделай практический вывод, для каких "
+        "типов задач лучше подходят temperature 0, 0.7 и 1.2. Отвечай на русском "
+        f"языке, структурированно и не превышай {max_words} слов.",
+        0.0,
+    )
+    return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -196,6 +236,7 @@ class Handler(SimpleHTTPRequestHandler):
             use_format = payload.get("use_format", True) is not False
             max_words = int(payload.get("max_words", 200))
             compare_mode = payload.get("compare_mode", False) is True
+            compare_temperature_mode = payload.get("compare_temperature_mode", False) is True
             use_temperature = payload.get("use_temperature", False) is True
             temperature = float(payload.get("temperature", 1.0)) if use_temperature else None
             finish_mode = payload.get("finish_mode", "none")
@@ -213,6 +254,24 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if temperature is not None and not 0 <= temperature <= 2:
             self.send_json(400, {"error": "Temperature должна быть от 0 до 2."})
+            return
+        if compare_mode and compare_temperature_mode:
+            self.send_json(400, {"error": "Выберите только один режим сравнения."})
+            return
+        if compare_temperature_mode:
+            try:
+                comparison = compare_temperatures(api_key, prompt, max_words)
+            except HTTPError as error:
+                try:
+                    message = json.load(error).get("error", {}).get("message")
+                except Exception:
+                    message = None
+                self.send_json(error.code, {"error": message or "Ошибка API модели."})
+                return
+            except Exception:
+                self.send_json(502, {"error": "Не удалось сравнить значения temperature."})
+                return
+            self.send_json(200, comparison)
             return
         if compare_mode:
             try:
