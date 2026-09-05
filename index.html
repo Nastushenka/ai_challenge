@@ -87,6 +87,21 @@
       background: white; color: var(--ink); font: inherit; font-size: 13px; outline: none;
     }
     .limit-control input:focus { border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614; }
+    .prompt-limit-control { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line); }
+    .prompt-limit-toggle { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+    .prompt-limit-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+    .prompt-limit-toggle strong { margin: 0; }
+    .prompt-limit-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px;
+    }
+    .prompt-limit-row label { color: var(--muted); }
+    .prompt-limit-row input {
+      width: 104px; border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px;
+      background: white; color: var(--ink); font: inherit; font-size: 13px; outline: none;
+    }
+    .prompt-limit-row input:focus { border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614; }
+    .prompt-limit-row input:disabled { opacity: .42; cursor: not-allowed; }
+    .prompt-limit-help { display: block; margin-top: 5px; color: var(--muted); }
     .temperature-control { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line); }
     .temperature-toggle { display: flex; align-items: center; gap: 9px; cursor: pointer; }
     .temperature-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
@@ -125,6 +140,8 @@
     textarea::placeholder { color: #99a2b3; }
     .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 15px 15px 20px; }
     .hint { color: var(--muted); font-size: 12px; }
+    .prompt-count { display: block; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .prompt-count.over { color: #b42318; font-weight: 700; }
     .send {
       width: 42px; height: 42px; border: 0; border-radius: 13px; cursor: pointer;
       background: var(--accent); color: white; font-size: 20px; transition: .16s ease;
@@ -220,6 +237,17 @@
               <li>«Итог» — одно заключительное предложение</li>
             </ol>
           </div>
+          <div class="prompt-limit-control">
+            <label class="prompt-limit-toggle" for="use-prompt-limit">
+              <input id="use-prompt-limit" type="checkbox">
+              <strong>Ограничить длину запроса</strong>
+            </label>
+            <div class="prompt-limit-row">
+              <label for="max-prompt-chars">Максимум символов</label>
+              <input id="max-prompt-chars" type="number" min="1" max="12000" step="100" value="1000" inputmode="numeric" disabled>
+            </div>
+            <span class="prompt-limit-help">При превышении запрос не отправится. Общий предел — 12 000 символов.</span>
+          </div>
           <label class="limit-control" for="max-words">
             <span class="limit-copy">
               <strong>Максимум слов</strong>
@@ -262,7 +290,10 @@
         <label for="prompt" hidden>Ваш вопрос</label>
         <textarea id="prompt" maxlength="12000" placeholder="Например: составь план изучения английского на месяц…" required></textarea>
         <div class="actions">
-          <span class="hint">Enter — отправить · Shift + Enter — новая строка</span>
+          <span class="hint">
+            Enter — отправить · Shift + Enter — новая строка
+            <span class="prompt-count" id="prompt-count" aria-live="polite">0 / 12 000 символов</span>
+          </span>
           <button class="send" type="submit" aria-label="Отправить вопрос">↑</button>
         </div>
       </form>
@@ -293,6 +324,9 @@
     const useFormat = document.querySelector('#use-format');
     const compareMode = document.querySelector('#compare-mode');
     const compareTemperatureMode = document.querySelector('#compare-temperature-mode');
+    const usePromptLimit = document.querySelector('#use-prompt-limit');
+    const maxPromptChars = document.querySelector('#max-prompt-chars');
+    const promptCount = document.querySelector('#prompt-count');
     const maxWords = document.querySelector('#max-words');
     const useTemperature = document.querySelector('#use-temperature');
     const temperatureRange = document.querySelector('#temperature-range');
@@ -382,6 +416,22 @@
       return Math.min(2, Math.max(0, Number(value) || 0));
     }
 
+    function clampPromptLimit(value) {
+      return Math.min(12000, Math.max(1, Number(value) || 1000));
+    }
+
+    function updatePromptCount() {
+      const limit = usePromptLimit.checked ? clampPromptLimit(maxPromptChars.value) : 12000;
+      prompt.maxLength = limit;
+      promptCount.textContent = `${prompt.value.length.toLocaleString('ru-RU')} / ${limit.toLocaleString('ru-RU')} символов`;
+      promptCount.classList.toggle('over', prompt.value.length > limit);
+    }
+
+    function updatePromptLimitControl() {
+      maxPromptChars.disabled = !usePromptLimit.checked;
+      updatePromptCount();
+    }
+
     function updateTemperatureControl() {
       const enabled = useTemperature.checked && !useTemperature.disabled;
       temperatureRange.disabled = !enabled;
@@ -389,6 +439,12 @@
     }
 
     useTemperature.addEventListener('change', updateTemperatureControl);
+    usePromptLimit.addEventListener('change', updatePromptLimitControl);
+    maxPromptChars.addEventListener('input', updatePromptCount);
+    maxPromptChars.addEventListener('change', () => {
+      maxPromptChars.value = clampPromptLimit(maxPromptChars.value);
+      updatePromptCount();
+    });
     temperatureRange.addEventListener('input', () => {
       temperatureValue.value = temperatureRange.value;
     });
@@ -433,12 +489,14 @@
     newChat.addEventListener('click', () => {
       resetDialogue();
       prompt.value = '';
+      updatePromptCount();
       prompt.focus();
     });
 
     examples.addEventListener('click', (event) => {
       if (event.target.matches('button')) {
         prompt.value = event.target.textContent;
+        updatePromptCount();
         prompt.focus();
       }
     });
@@ -449,11 +507,21 @@
         form.requestSubmit();
       }
     });
+    prompt.addEventListener('input', updatePromptCount);
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const text = prompt.value.trim();
       if (!text) return;
+      const promptLimit = usePromptLimit.checked ? clampPromptLimit(maxPromptChars.value) : 12000;
+      maxPromptChars.value = clampPromptLimit(maxPromptChars.value);
+      if (text.length > promptLimit) {
+        resetDialogue();
+        result.className = 'visible error';
+        dialogueStatus.textContent = `Запрос не должен превышать ${promptLimit.toLocaleString('ru-RU')} символов.`;
+        updatePromptCount();
+        return;
+      }
       const wordLimit = Math.min(2000, Math.max(20, Number(maxWords.value) || 200));
       maxWords.value = wordLimit;
       const selectedTemperature = clampTemperature(temperatureValue.value);
@@ -476,6 +544,7 @@
       addMessage('user', text);
       messages.push({ role: 'user', content: text });
       prompt.value = '';
+      updatePromptCount();
 
       try {
         const response = await fetch('/api/chat', {
@@ -483,6 +552,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: text,
+            use_prompt_limit: usePromptLimit.checked,
+            max_prompt_chars: promptLimit,
             compare_mode: comparisonEnabled,
             compare_temperature_mode: temperatureComparisonEnabled,
             use_temperature: useTemperature.checked,
@@ -531,6 +602,7 @@
         send.disabled = false;
       }
     });
+    updatePromptLimitControl();
   </script>
 </body>
 </html>
