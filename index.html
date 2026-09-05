@@ -120,11 +120,22 @@
     #result {
       display: none; margin-top: 22px; padding: 20px; border: 1px solid var(--line);
       border-radius: 20px; background: #ffffffcf; box-shadow: 0 12px 36px #252f4812;
-      white-space: pre-wrap; font-size: 15px; line-height: 1.7;
+      font-size: 15px; line-height: 1.7;
     }
     #result.visible { display: block; }
     #result.loading { color: var(--muted); }
     #result.error { border-color: #fecaca; background: #fff1f2e6; color: #b91c1c; }
+    .result-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .dialogue-status { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .dialogue-status.complete { color: #16805b; }
+    .new-chat {
+      border: 1px solid var(--line); border-radius: 9px; padding: 6px 9px; cursor: pointer;
+      background: white; color: var(--muted); font: inherit; font-size: 12px;
+    }
+    .messages { display: grid; gap: 10px; }
+    .message { max-width: 88%; padding: 11px 13px; border-radius: 15px; white-space: pre-wrap; }
+    .message.user { justify-self: end; background: var(--accent); color: white; border-bottom-right-radius: 5px; }
+    .message.assistant { justify-self: start; background: #f0f2f7; color: var(--ink); border-bottom-left-radius: 5px; }
     footer { text-align: center; }
     @media (max-width: 560px) {
       .shell { padding-top: 20px; }
@@ -170,18 +181,17 @@
             <input id="max-words" type="number" min="20" max="2000" step="10" value="200" inputmode="numeric">
           </label>
           <div class="finish-control">
-            <strong>Завершение ответа</strong>
+            <strong>Диалог до готового результата</strong>
             <div class="finish-row">
-              <label for="finish-mode" hidden>Способ завершения ответа</label>
+              <label for="finish-mode" hidden>Режим диалога</label>
               <select id="finish-mode">
-                <option value="none">Без условия</option>
-                <option value="instruction">Явная инструкция</option>
-                <option value="sequence">Stop sequence</option>
+                <option value="none">Обычный ответ</option>
+                <option value="dialogue" selected>Уточнять до готовности</option>
               </select>
-              <label for="finish-value" hidden>Условие завершения</label>
-              <input id="finish-value" type="text" maxlength="500" placeholder="Сначала выберите способ" disabled>
+              <label for="finish-value" hidden>Критерий готовности</label>
+              <input id="finish-value" type="text" maxlength="500" value="Когда собраны все данные, необходимые для точного и полезного результата">
             </div>
-            <span class="finish-help" id="finish-help">Модель завершит ответ обычным способом.</span>
+            <span class="finish-help" id="finish-help">Модель задаёт по одному вопросу, затем выдаёт итог.</span>
           </div>
         </div>
       </section>
@@ -200,7 +210,13 @@
         <button type="button">Придумай 5 идей для поста</button>
         <button type="button">Составь план на неделю</button>
       </div>
-      <output id="result" aria-live="polite"></output>
+      <section id="result" aria-live="polite">
+        <div class="result-head">
+          <span class="dialogue-status" id="dialogue-status"></span>
+          <button class="new-chat" id="new-chat" type="button">Новый диалог</button>
+        </div>
+        <div class="messages" id="messages"></div>
+      </section>
     </main>
 
     <footer>DeepSeek V4 Pro · API-ключ хранится на сервере и не передаётся в браузер.</footer>
@@ -217,26 +233,45 @@
     const finishMode = document.querySelector('#finish-mode');
     const finishValue = document.querySelector('#finish-value');
     const finishHelp = document.querySelector('#finish-help');
+    const dialogueStatus = document.querySelector('#dialogue-status');
+    const messagesView = document.querySelector('#messages');
+    const newChat = document.querySelector('#new-chat');
+    let messages = [];
+
+    function resetDialogue() {
+      messages = [];
+      messagesView.replaceChildren();
+      result.className = '';
+      dialogueStatus.className = 'dialogue-status';
+      dialogueStatus.textContent = '';
+    }
+
+    function addMessage(role, text) {
+      const message = document.createElement('div');
+      message.className = `message ${role}`;
+      message.textContent = text;
+      messagesView.append(message);
+    }
 
     function updateFinishControl() {
-      const mode = finishMode.value;
-      finishValue.disabled = mode === 'none';
-      finishValue.required = mode !== 'none';
-      finishValue.maxLength = mode === 'sequence' ? 100 : 500;
-      if (mode === 'instruction') {
-        finishValue.placeholder = 'Например: закончи ответ кратким выводом';
-        finishHelp.textContent = 'Инструкция будет добавлена к запросу модели.';
-      } else if (mode === 'sequence') {
-        finishValue.placeholder = 'Например: <END>';
-        finishHelp.textContent = 'Маркер остановит ответ и не будет показан.';
-      } else {
-        finishValue.value = '';
-        finishValue.placeholder = 'Сначала выберите способ';
-        finishHelp.textContent = 'Модель завершит ответ обычным способом.';
-      }
+      const isDialogue = finishMode.value === 'dialogue';
+      finishValue.disabled = !isDialogue;
+      finishValue.required = isDialogue;
+      finishValue.placeholder = isDialogue
+        ? 'Например: когда известны блюдо, ингредиенты и число порций'
+        : 'Включите режим уточнений';
+      finishHelp.textContent = isDialogue
+        ? 'Модель задаёт по одному вопросу, затем выдаёт итог.'
+        : 'Модель отвечает сразу на каждый новый запрос.';
+      resetDialogue();
     }
 
     finishMode.addEventListener('change', updateFinishControl);
+    newChat.addEventListener('click', () => {
+      resetDialogue();
+      prompt.value = '';
+      prompt.focus();
+    });
 
     examples.addEventListener('click', (event) => {
       if (event.target.matches('button')) {
@@ -258,10 +293,17 @@
       if (!text) return;
       const wordLimit = Math.min(2000, Math.max(20, Number(maxWords.value) || 200));
       maxWords.value = wordLimit;
+      const dialogueMode = finishMode.value === 'dialogue';
+      const history = dialogueMode ? [...messages] : [];
+      if (!dialogueMode) resetDialogue();
 
       send.disabled = true;
       result.className = 'visible loading';
-      result.textContent = 'Модель формирует ответ…';
+      dialogueStatus.className = 'dialogue-status';
+      dialogueStatus.textContent = dialogueMode ? 'Модель анализирует, достаточно ли данных…' : 'Модель формирует ответ…';
+      addMessage('user', text);
+      messages.push({ role: 'user', content: text });
+      prompt.value = '';
 
       try {
         const response = await fetch('/api/chat', {
@@ -271,17 +313,25 @@
             prompt: text,
             use_format: useFormat.checked,
             max_words: wordLimit,
-            finish_mode: finishMode.value,
-            finish_value: finishValue.value.trim(),
+            dialogue_mode: dialogueMode,
+            finish_condition: finishValue.value.trim(),
+            history,
           }),
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Не удалось получить ответ');
         result.className = 'visible';
-        result.textContent = data.answer || 'Модель вернула пустой ответ.';
+        const answer = data.answer || 'Модель вернула пустой ответ.';
+        addMessage('assistant', answer);
+        messages.push({ role: 'assistant', content: answer });
+        dialogueStatus.className = data.complete ? 'dialogue-status complete' : 'dialogue-status';
+        dialogueStatus.textContent = dialogueMode
+          ? (data.complete ? '✓ Данных достаточно — итог готов' : 'Нужно уточнение')
+          : 'Ответ готов';
       } catch (error) {
         result.className = 'visible error';
-        result.textContent = error.message || 'Не удалось получить ответ.';
+        dialogueStatus.textContent = error.message || 'Не удалось получить ответ.';
+        messages.pop();
       } finally {
         send.disabled = false;
       }
