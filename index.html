@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Chat</title>
+  <meta name="description" content="Простой веб-интерфейс для запросов к DeepSeek V4 Flash">
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #697386;
+      --line: #dce2ec;
+      --accent: #5b5bd6;
+      --accent-hover: #4949bf;
+      --accent-soft: #ebebff;
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 8%, #e1f0ff 0, transparent 34rem),
+        radial-gradient(circle at 85% 92%, #eee6ff 0, transparent 32rem),
+        #f8fafc;
+    }
+    .shell {
+      width: min(760px, calc(100% - 32px));
+      min-height: 100vh;
+      margin: auto;
+      padding: 32px 0 24px;
+      display: flex;
+      flex-direction: column;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .logo {
+      width: 42px; height: 42px; border-radius: 15px; display: grid; place-items: center;
+      background: var(--ink); color: white; font-size: 21px; box-shadow: 0 5px 15px #17203324;
+    }
+    .brand strong { display: block; font-size: 14px; }
+    .brand small, footer { color: var(--muted); font-size: 12px; }
+    .model {
+      border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px;
+      background: #ffffffb8; color: var(--muted); font-size: 12px; font-weight: 600;
+    }
+    main { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 54px 0; }
+    .intro { margin-bottom: 30px; text-align: center; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px;
+      border-radius: 999px; color: var(--accent); background: var(--accent-soft);
+      font-size: 12px; font-weight: 700;
+    }
+    h1 { margin: 16px 0 0; font-size: clamp(34px, 7vw, 52px); letter-spacing: -.045em; line-height: 1.05; }
+    .intro p { max-width: 580px; margin: 14px auto 0; color: var(--muted); line-height: 1.6; }
+    form {
+      overflow: hidden; border: 1px solid var(--line); border-radius: 24px;
+      background: #ffffffe8; box-shadow: 0 22px 65px #252f481a, 0 2px 8px #252f480d;
+      transition: .16s ease;
+    }
+    form:focus-within { border-color: #a8a8ed; box-shadow: 0 24px 72px #4646b521, 0 0 0 3px #5b5bd614; }
+    textarea {
+      display: block; width: 100%; min-height: 138px; padding: 20px 20px 12px;
+      resize: vertical; border: 0; outline: 0; background: transparent; color: var(--ink);
+      font: inherit; font-size: 16px; line-height: 1.65;
+    }
+    textarea::placeholder { color: #99a2b3; }
+    .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 15px 15px 20px; }
+    .hint { color: var(--muted); font-size: 12px; }
+    .send {
+      width: 42px; height: 42px; border: 0; border-radius: 13px; cursor: pointer;
+      background: var(--accent); color: white; font-size: 20px; transition: .16s ease;
+    }
+    .send:hover { background: var(--accent-hover); transform: translateY(-1px); }
+    .send:disabled { cursor: not-allowed; opacity: .4; transform: none; }
+    .examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
+    .examples button {
+      border: 1px solid var(--line); border-radius: 999px; padding: 9px 13px; cursor: pointer;
+      background: #ffffffa8; color: var(--muted); font-size: 12px; transition: .15s ease;
+    }
+    .examples button:hover { border-color: #a8a8ed; background: white; color: var(--ink); }
+    #result {
+      display: none; margin-top: 22px; padding: 20px; border: 1px solid var(--line);
+      border-radius: 20px; background: #ffffffcf; box-shadow: 0 12px 36px #252f4812;
+      white-space: pre-wrap; font-size: 15px; line-height: 1.7;
+    }
+    #result.visible { display: block; }
+    #result.loading { color: var(--muted); }
+    #result.error { border-color: #fecaca; background: #fff1f2e6; color: #b91c1c; }
+    footer { text-align: center; }
+    @media (max-width: 560px) {
+      .shell { padding-top: 20px; }
+      main { padding: 40px 0; }
+      .hint { max-width: 210px; }
+      .model { padding-inline: 9px; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <span class="logo" aria-hidden="true">✦</span>
+        <div><strong>LLM Chat</strong><small>простой интерфейс для DeepSeek</small></div>
+      </div>
+      <span class="model">DeepSeek V4 Flash</span>
+    </header>
+
+    <main>
+      <section class="intro">
+        <span class="eyebrow">✦ Недорогие ответы через API</span>
+        <h1>О чём хотите спросить?</h1>
+        <p>Напишите вопрос — интерфейс отправит его в модель и покажет ответ.</p>
+      </section>
+
+      <form id="chat-form">
+        <label for="prompt" hidden>Ваш вопрос</label>
+        <textarea id="prompt" maxlength="12000" placeholder="Например: составь план изучения английского на месяц…" required></textarea>
+        <div class="actions">
+          <span class="hint">Enter — отправить · Shift + Enter — новая строка</span>
+          <button class="send" type="submit" aria-label="Отправить вопрос">↑</button>
+        </div>
+      </form>
+
+      <div class="examples" id="examples">
+        <button type="button">Объясни простыми словами, что такое API</button>
+        <button type="button">Придумай 5 идей для поста</button>
+        <button type="button">Составь план на неделю</button>
+      </div>
+      <output id="result" aria-live="polite"></output>
+    </main>
+
+    <footer>API-ключ хранится на сервере и не передаётся в браузер.</footer>
+  </div>
+
+  <script>
+    const form = document.querySelector('#chat-form');
+    const prompt = document.querySelector('#prompt');
+    const result = document.querySelector('#result');
+    const send = document.querySelector('.send');
+    const examples = document.querySelector('#examples');
+
+    examples.addEventListener('click', (event) => {
+      if (event.target.matches('button')) {
+        prompt.value = event.target.textContent;
+        prompt.focus();
+      }
+    });
+
+    prompt.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const text = prompt.value.trim();
+      if (!text) return;
+
+      send.disabled = true;
+      result.className = 'visible loading';
+      result.textContent = 'Модель формирует ответ…';
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: text }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Не удалось получить ответ');
+        result.className = 'visible';
+        result.textContent = data.answer || 'Модель вернула пустой ответ.';
+      } catch (error) {
+        result.className = 'visible error';
+        result.textContent = error.message || 'Не удалось получить ответ.';
+      } finally {
+        send.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
