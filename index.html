@@ -55,6 +55,10 @@
     }
     h1 { margin: 16px 0 0; font-size: clamp(34px, 7vw, 52px); letter-spacing: -.045em; line-height: 1.05; }
     .intro p { max-width: 580px; margin: 14px auto 0; color: var(--muted); line-height: 1.6; }
+    .response-format {
+      width: fit-content; margin: 14px auto 0; padding: 8px 12px; border: 1px solid var(--line);
+      border-radius: 12px; background: #ffffffa8; color: var(--muted); font-size: 12px;
+    }
     form {
       overflow: hidden; border: 1px solid var(--line); border-radius: 24px;
       background: #ffffffe8; box-shadow: 0 22px 65px #252f481a, 0 2px 8px #252f480d;
@@ -114,6 +118,9 @@
         <span class="eyebrow">✦ Работает на DeepSeek V4 Pro</span>
         <h1>О чём хотите спросить?</h1>
         <p>Напишите вопрос — интерфейс отправит его в модель и покажет ответ.</p>
+        <div class="response-format">
+          <strong>Формат ответа:</strong> краткий вывод → нумерованные пункты при необходимости
+        </div>
       </section>
 
       <form id="chat-form">
