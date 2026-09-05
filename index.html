@@ -79,6 +79,18 @@
       background: white; color: var(--ink); font: inherit; font-size: 13px; outline: none;
     }
     .limit-control input:focus { border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614; }
+    .finish-control { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line); }
+    .finish-control strong { display: block; margin-bottom: 7px; color: var(--ink); }
+    .finish-row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; }
+    .finish-row select, .finish-row input {
+      min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 10px;
+      padding: 8px 9px; background: white; color: var(--ink); font: inherit; font-size: 12px; outline: none;
+    }
+    .finish-row select:focus, .finish-row input:focus {
+      border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614;
+    }
+    .finish-help { display: block; margin-top: 6px; color: var(--muted); }
+    .finish-row input:disabled { background: #f3f5f8; color: #99a2b3; }
     form {
       overflow: hidden; border: 1px solid var(--line); border-radius: 24px;
       background: #ffffffe8; box-shadow: 0 22px 65px #252f481a, 0 2px 8px #252f480d;
@@ -157,6 +169,20 @@
             </span>
             <input id="max-words" type="number" min="20" max="2000" step="10" value="200" inputmode="numeric">
           </label>
+          <div class="finish-control">
+            <strong>Завершение ответа</strong>
+            <div class="finish-row">
+              <label for="finish-mode" hidden>Способ завершения ответа</label>
+              <select id="finish-mode">
+                <option value="none">Без условия</option>
+                <option value="instruction">Явная инструкция</option>
+                <option value="sequence">Stop sequence</option>
+              </select>
+              <label for="finish-value" hidden>Условие завершения</label>
+              <input id="finish-value" type="text" maxlength="500" placeholder="Сначала выберите способ" disabled>
+            </div>
+            <span class="finish-help" id="finish-help">Модель завершит ответ обычным способом.</span>
+          </div>
         </div>
       </section>
 
@@ -188,6 +214,29 @@
     const examples = document.querySelector('#examples');
     const useFormat = document.querySelector('#use-format');
     const maxWords = document.querySelector('#max-words');
+    const finishMode = document.querySelector('#finish-mode');
+    const finishValue = document.querySelector('#finish-value');
+    const finishHelp = document.querySelector('#finish-help');
+
+    function updateFinishControl() {
+      const mode = finishMode.value;
+      finishValue.disabled = mode === 'none';
+      finishValue.required = mode !== 'none';
+      finishValue.maxLength = mode === 'sequence' ? 100 : 500;
+      if (mode === 'instruction') {
+        finishValue.placeholder = 'Например: закончи ответ кратким выводом';
+        finishHelp.textContent = 'Инструкция будет добавлена к запросу модели.';
+      } else if (mode === 'sequence') {
+        finishValue.placeholder = 'Например: <END>';
+        finishHelp.textContent = 'Маркер остановит ответ и не будет показан.';
+      } else {
+        finishValue.value = '';
+        finishValue.placeholder = 'Сначала выберите способ';
+        finishHelp.textContent = 'Модель завершит ответ обычным способом.';
+      }
+    }
+
+    finishMode.addEventListener('change', updateFinishControl);
 
     examples.addEventListener('click', (event) => {
       if (event.target.matches('button')) {
@@ -222,6 +271,8 @@
             prompt: text,
             use_format: useFormat.checked,
             max_words: wordLimit,
+            finish_mode: finishMode.value,
+            finish_value: finishValue.value.trim(),
           }),
         });
         const data = await response.json();
