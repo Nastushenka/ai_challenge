@@ -1,4 +1,4 @@
-# Nastia Chat — веб-интерфейс DeepSeek
+# Nastia Chat — веб-интерфейс для нескольких LLM
 
 Сторонние библиотеки не нужны.
 
@@ -11,12 +11,21 @@ python3 server.py
 
 Откройте в браузере: <http://127.0.0.1:8000>
 
-По умолчанию используется `deepseek-v4-pro` через официальный Responses API
-DeepSeek. Адрес API и модель настраиваются в локальном файле `.env`:
+В интерфейсе можно переключаться между тремя моделями:
+
+- `DeepSeek V4 Pro` — текущая основная модель;
+- `Gemma 3 4B` — небольшая модель `google/gemma-3-4b-it` через Hugging Face;
+- `Qwen 3 8B` — средняя модель `Qwen/Qwen3-8B` через Hugging Face.
+
+Выбранная модель применяется к обычному запросу и обоим режимам сравнения.
+DeepSeek и Hugging Face используют отдельные ключи в локальном файле `.env`:
 
 - `LLM_API_KEY` — API-ключ;
 - `LLM_BASE_URL` — `https://api.deepseek.com`;
 - `LLM_MODEL` — `deepseek-v4-pro`.
+- `HF_TOKEN` — токен Hugging Face с правом вызова Inference Providers;
+- `HF_BASE_URL` — `https://router.huggingface.co/v1`;
+- `HF_GEMMA_MODEL` и `HF_QWEN_MODEL` — идентификаторы моделей Hugging Face.
 
 Файл `.env` исключён из Git и не попадёт в репозиторий.
 
