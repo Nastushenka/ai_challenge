@@ -12,6 +12,35 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).parent
 SYSTEM_CA_FILE = Path("/etc/ssl/cert.pem")
 FINAL_MARKER = "[[READY]]"
+MODEL_OPTIONS = {
+    "deepseek-v4-pro": {
+        "label": "DeepSeek V4 Pro",
+        "model_env": "LLM_MODEL",
+        "model_default": "deepseek-v4-pro",
+        "base_url_env": "LLM_BASE_URL",
+        "base_url_default": "https://api.deepseek.com",
+        "api_key_env": "LLM_API_KEY",
+        "disable_reasoning_for_temperature": True,
+    },
+    "gemma-3-4b": {
+        "label": "Gemma 3 4B",
+        "model_env": "HF_GEMMA_MODEL",
+        "model_default": "google/gemma-3-4b-it:cheapest",
+        "base_url_env": "HF_BASE_URL",
+        "base_url_default": "https://router.huggingface.co/v1",
+        "api_key_env": "HF_TOKEN",
+        "disable_reasoning_for_temperature": False,
+    },
+    "qwen3-8b": {
+        "label": "Qwen 3 8B",
+        "model_env": "HF_QWEN_MODEL",
+        "model_default": "Qwen/Qwen3-8B:cheapest",
+        "base_url_env": "HF_BASE_URL",
+        "base_url_default": "https://router.huggingface.co/v1",
+        "api_key_env": "HF_TOKEN",
+        "disable_reasoning_for_temperature": False,
+    },
+}
 
 
 def load_local_env():
@@ -39,18 +68,26 @@ def truncate_words(text, max_words):
     return text[:cut_at].rstrip(" ,;:.") + "…"
 
 
-def call_model(api_key, input_value, instructions=None, temperature=None):
+def call_model(
+    api_key, input_value, instructions=None, temperature=None, model_key="deepseek-v4-pro"
+):
+    model_config = MODEL_OPTIONS[model_key]
     request_body = {
-        "model": os.environ.get("LLM_MODEL", "deepseek-v4-pro"),
+        "model": os.environ.get(
+            model_config["model_env"], model_config["model_default"]
+        ),
         "input": input_value,
     }
     if instructions:
         request_body["instructions"] = instructions
     if temperature is not None:
         request_body["temperature"] = temperature
-        request_body["reasoning"] = {"effort": "none"}
+        if model_config["disable_reasoning_for_temperature"]:
+            request_body["reasoning"] = {"effort": "none"}
     body = json.dumps(request_body).encode()
-    api_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    api_url = os.environ.get(
+        model_config["base_url_env"], model_config["base_url_default"]
+    ).rstrip("/")
     request = Request(
         f"{api_url}/responses",
         data=body,
@@ -80,13 +117,15 @@ def call_model(api_key, input_value, instructions=None, temperature=None):
     )
 
 
-def compare_solutions(api_key, prompt, max_words, temperature=None):
+def compare_solutions(
+    api_key, prompt, max_words, temperature=None, model_key="deepseek-v4-pro"
+):
     limit_instruction = (
         f" Не превышай {max_words} слов." if max_words is not None else ""
     )
 
     def direct_solution():
-        return call_model(api_key, prompt, temperature=temperature)
+        return call_model(api_key, prompt, temperature=temperature, model_key=model_key)
 
     def step_by_step_solution():
         return call_model(
@@ -100,6 +139,7 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
             "ответ. Не выдумывай отсутствующие данные: явно отмечай неоднозначность. "
             f"Отвечай на русском языке.{limit_instruction}",
             temperature,
+            model_key,
         )
 
     def prompt_engineering_solution():
@@ -116,8 +156,11 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
             "Промпт должен быть на русском языке и подходить для использования без "
             "дополнительного контекста.",
             temperature,
+            model_key,
         )
-        answer = call_model(api_key, generated_prompt, temperature=temperature)
+        answer = call_model(
+            api_key, generated_prompt, temperature=temperature, model_key=model_key
+        )
         return generated_prompt, answer
 
     def expert_group_solution():
@@ -128,6 +171,7 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
             "Пусть каждый независимо предложит своё решение задачи и объяснит ход мысли. "
             f"Чётко раздели ответы экспертов. Отвечай на русском языке.{limit_instruction}",
             temperature,
+            model_key,
         )
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -177,11 +221,12 @@ def compare_solutions(api_key, prompt, max_words, temperature=None):
         "полноту, понятность и надёжность. Укажи совпадения и противоречия, выбери "
         f"лучший подход и сформулируй итоговый вывод.{limit_instruction}",
         temperature,
+        model_key,
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
 
-def compare_temperatures(api_key, prompt, max_words):
+def compare_temperatures(api_key, prompt, max_words, model_key="deepseek-v4-pro"):
     limit_instruction = (
         f" Не превышай {max_words} слов." if max_words is not None else ""
     )
@@ -193,7 +238,7 @@ def compare_temperatures(api_key, prompt, max_words):
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
-            value: executor.submit(call_model, api_key, prompt, None, value)
+            value: executor.submit(call_model, api_key, prompt, None, value, model_key)
             for _, _, value, _ in settings
         }
         solutions = [
@@ -220,6 +265,7 @@ def compare_temperatures(api_key, prompt, max_words):
         "типов задач лучше подходят temperature 0, 0.7 и 1.2. Отвечай на русском "
         f"языке и структурированно.{limit_instruction}",
         0.0,
+        model_key,
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
@@ -233,15 +279,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
 
-        api_key = os.environ.get("LLM_API_KEY")
-        if not api_key:
-            self.send_json(503, {"error": "На сервере не настроен LLM_API_KEY."})
-            return
-
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
             prompt = payload.get("prompt", "").strip()
+            model_key = payload.get("model", "deepseek-v4-pro")
             use_format = payload.get("use_format", True) is not False
             use_word_limit = payload.get("use_word_limit", False) is True
             max_words = int(payload.get("max_words", 200)) if use_word_limit else None
@@ -262,6 +304,20 @@ class Handler(SimpleHTTPRequestHandler):
 
         if not prompt:
             self.send_json(400, {"error": "Введите запрос."})
+            return
+        if model_key not in MODEL_OPTIONS:
+            self.send_json(400, {"error": "Выберите доступную модель."})
+            return
+        model_config = MODEL_OPTIONS[model_key]
+        api_key = os.environ.get(model_config["api_key_env"])
+        if not api_key:
+            self.send_json(
+                503,
+                {
+                    "error": f"На сервере не настроен {model_config['api_key_env']} "
+                    f"для модели {model_config['label']}."
+                },
+            )
             return
         if use_prompt_limit and not 1 <= max_prompt_chars <= 12000:
             self.send_json(
@@ -286,7 +342,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if compare_temperature_mode:
             try:
-                comparison = compare_temperatures(api_key, prompt, max_words)
+                comparison = compare_temperatures(
+                    api_key, prompt, max_words, model_key
+                )
             except HTTPError as error:
                 try:
                     message = json.load(error).get("error", {}).get("message")
@@ -301,7 +359,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if compare_mode:
             try:
-                comparison = compare_solutions(api_key, prompt, max_words, temperature)
+                comparison = compare_solutions(
+                    api_key, prompt, max_words, temperature, model_key
+                )
             except HTTPError as error:
                 try:
                     message = json.load(error).get("error", {}).get("message")
@@ -387,6 +447,7 @@ class Handler(SimpleHTTPRequestHandler):
                 messages if dialogue_mode else prompt,
                 " ".join(instructions),
                 temperature,
+                model_key,
             )
         except HTTPError as error:
             try:
