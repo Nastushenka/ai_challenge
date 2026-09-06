@@ -44,8 +44,10 @@
     .brand small, footer { color: var(--muted); font-size: 12px; }
     .model {
       border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px;
-      background: #ffffffb8; color: var(--muted); font-size: 12px; font-weight: 600;
+      background: #ffffffb8; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600;
+      outline: none; cursor: pointer;
     }
+    .model:focus { border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614; }
     main { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 54px 0; }
     .intro { margin-bottom: 30px; text-align: center; }
     .eyebrow {
@@ -205,14 +207,19 @@
     <header>
       <div class="brand">
         <span class="logo" aria-hidden="true">✦</span>
-        <div><strong>Nastia Chat</strong><small>помощник на базе DeepSeek</small></div>
+        <div><strong>Nastia Chat</strong><small>помощник с выбором модели</small></div>
       </div>
-      <span class="model">DeepSeek V4 Pro</span>
+      <label for="model-select" hidden>Модель</label>
+      <select class="model" id="model-select">
+        <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+        <option value="gemma-3-4b">Gemma 3 4B</option>
+        <option value="qwen3-8b">Qwen 3 8B</option>
+      </select>
     </header>
 
     <main>
       <section class="intro">
-        <span class="eyebrow">✦ Работает на DeepSeek V4 Pro</span>
+        <span class="eyebrow" id="model-label">✦ Работает на DeepSeek V4 Pro</span>
         <h1>О чём хотите спросить?</h1>
         <p>Напишите вопрос — интерфейс отправит его в модель и покажет ответ.</p>
         <div class="response-format">
@@ -320,7 +327,7 @@
       </section>
     </main>
 
-    <footer>DeepSeek V4 Pro · API-ключ хранится на сервере и не передаётся в браузер.</footer>
+    <footer>Ключи API хранятся на сервере и не передаются в браузер.</footer>
   </div>
 
   <script>
@@ -332,6 +339,8 @@
     const useFormat = document.querySelector('#use-format');
     const compareMode = document.querySelector('#compare-mode');
     const compareTemperatureMode = document.querySelector('#compare-temperature-mode');
+    const modelSelect = document.querySelector('#model-select');
+    const modelLabel = document.querySelector('#model-label');
     const usePromptLimit = document.querySelector('#use-prompt-limit');
     const maxPromptChars = document.querySelector('#max-prompt-chars');
     const promptCount = document.querySelector('#prompt-count');
@@ -347,6 +356,12 @@
     const messagesView = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
     let messages = [];
+
+    function updateSelectedModel() {
+      const label = modelSelect.options[modelSelect.selectedIndex].text;
+      modelLabel.textContent = `✦ Работает на ${label}`;
+      resetDialogue();
+    }
 
     function resetDialogue() {
       messages = [];
@@ -456,6 +471,7 @@
     }
 
     useTemperature.addEventListener('change', updateTemperatureControl);
+    modelSelect.addEventListener('change', updateSelectedModel);
     usePromptLimit.addEventListener('change', updatePromptLimitControl);
     useWordLimit.addEventListener('change', updateWordLimitControl);
     maxWords.addEventListener('change', () => {
@@ -573,6 +589,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: text,
+            model: modelSelect.value,
             use_prompt_limit: usePromptLimit.checked,
             max_prompt_chars: promptLimit,
             compare_mode: comparisonEnabled,
