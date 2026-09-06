@@ -2,7 +2,9 @@ import json
 import os
 import re
 import ssl
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -30,6 +32,7 @@ MODEL_OPTIONS = {
         "base_url_default": "https://router.huggingface.co/v1",
         "api_key_env": "HF_TOKEN",
         "disable_reasoning_for_temperature": False,
+        "pricing": {"input": 0.05, "output": 0.10},
     },
     "qwen3-8b": {
         "label": "Qwen 3 8B",
@@ -39,6 +42,7 @@ MODEL_OPTIONS = {
         "base_url_default": "https://router.huggingface.co/v1",
         "api_key_env": "HF_TOKEN",
         "disable_reasoning_for_temperature": False,
+        "pricing": {"input": 0.07, "output": 0.18},
     },
 }
 
@@ -68,7 +72,35 @@ def truncate_words(text, max_words):
     return text[:cut_at].rstrip(" ,;:.") + "…"
 
 
-def call_model(
+def estimate_cost(model_key, usage):
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    cached_tokens = int(
+        (usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
+    )
+    if model_key == "deepseek-v4-pro":
+        now = datetime.now(timezone.utc)
+        is_peak = now.weekday() < 5 and (1 <= now.hour < 4 or 6 <= now.hour < 10)
+        multiplier = 2 if is_peak else 1
+        cache_hit_rate = 0.022 * multiplier
+        cache_miss_rate = 0.66 * multiplier
+        output_rate = 1.98 * multiplier
+        cost = (
+            cached_tokens * cache_hit_rate
+            + max(0, input_tokens - cached_tokens) * cache_miss_rate
+            + output_tokens * output_rate
+        ) / 1_000_000
+        period = "peak" if is_peak else "off-peak"
+        return cost, f"Расчёт по тарифу DeepSeek {period}"
+
+    pricing = MODEL_OPTIONS[model_key]["pricing"]
+    cost = (
+        input_tokens * pricing["input"] + output_tokens * pricing["output"]
+    ) / 1_000_000
+    return cost, "Расчёт по тарифу Hugging Face :cheapest до бесплатных кредитов"
+
+
+def call_model_result(
     api_key, input_value, instructions=None, temperature=None, model_key="deepseek-v4-pro"
 ):
     model_config = MODEL_OPTIONS[model_key]
@@ -99,6 +131,7 @@ def call_model(
     ssl_context = ssl.create_default_context(
         cafile=str(SYSTEM_CA_FILE) if SYSTEM_CA_FILE.exists() else None
     )
+    started_at = time.perf_counter()
     for attempt in range(2):
         try:
             with urlopen(request, timeout=90, context=ssl_context) as response:
@@ -108,13 +141,35 @@ def call_model(
             if attempt == 0 and error.code in {429, 500, 502, 503, 504}:
                 continue
             raise
-    return "".join(
+    elapsed_seconds = time.perf_counter() - started_at
+    text = "".join(
         content.get("text", "")
         for item in result.get("output", [])
         if item.get("type") == "message"
         for content in item.get("content", [])
         if content.get("type") == "output_text"
     )
+    usage = result.get("usage") or {}
+    cost_usd, pricing_note = estimate_cost(model_key, usage)
+    return {
+        "text": text,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "usage": {
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        },
+        "cost_usd": round(cost_usd, 8),
+        "pricing_note": pricing_note,
+    }
+
+
+def call_model(
+    api_key, input_value, instructions=None, temperature=None, model_key="deepseek-v4-pro"
+):
+    return call_model_result(
+        api_key, input_value, instructions, temperature, model_key
+    )["text"]
 
 
 def compare_solutions(
@@ -270,6 +325,73 @@ def compare_temperatures(api_key, prompt, max_words, model_key="deepseek-v4-pro"
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
 
+def compare_models(prompt, max_words, temperature=None):
+    limit_instruction = (
+        f" Весь ответ должен содержать не более {max_words} слов."
+        if max_words is not None
+        else ""
+    )
+    instructions = f"Отвечай на русском языке.{limit_instruction}"
+
+    def run_model(model_key):
+        model_config = MODEL_OPTIONS[model_key]
+        api_key = os.environ.get(model_config["api_key_env"])
+        result = call_model_result(
+            api_key, prompt, instructions, temperature, model_key
+        )
+        result["text"] = truncate_words(result["text"], max_words)
+        return model_key, result
+
+    with ThreadPoolExecutor(max_workers=len(MODEL_OPTIONS)) as executor:
+        futures = [executor.submit(run_model, model_key) for model_key in MODEL_OPTIONS]
+        results = dict(future.result() for future in futures)
+
+    solutions = []
+    for model_key, model_config in MODEL_OPTIONS.items():
+        result = results[model_key]
+        usage = result["usage"]
+        solutions.append(
+            {
+                "id": model_key,
+                "title": model_config["label"],
+                "description": "Один и тот же запрос без специальных подсказок для модели.",
+                "answer": result["text"],
+                "metrics": {
+                    "elapsed_seconds": result["elapsed_seconds"],
+                    "input_tokens": usage["input_tokens"],
+                    "output_tokens": usage["output_tokens"],
+                    "total_tokens": usage["total_tokens"],
+                    "cost_usd": result["cost_usd"],
+                    "pricing_note": result["pricing_note"],
+                },
+            }
+        )
+
+    comparison_text = "\n\n".join(
+        f"{solution['title']}\n"
+        f"Время: {solution['metrics']['elapsed_seconds']} сек.\n"
+        f"Токены: {solution['metrics']['total_tokens']}\n"
+        f"Стоимость: ${solution['metrics']['cost_usd']:.8f}\n"
+        f"Ответ:\n{solution['answer']}"
+        for solution in solutions
+    )
+    deepseek_key = os.environ[MODEL_OPTIONS["deepseek-v4-pro"]["api_key_env"]]
+    analysis = call_model(
+        deepseek_key,
+        f"Исходный запрос:\n{prompt}\n\nРезультаты моделей:\n{comparison_text}",
+        "Сравни ответы трёх моделей на русском языке. Оцени: 1) качество и "
+        "корректность ответа, 2) скорость по измеренному времени, 3) ресурсоёмкость "
+        "по количеству токенов и расчётной стоимости. Назови победителя по каждому "
+        "критерию, объясни компромиссы и закончи отдельным практическим выводом о "
+        "том, какую модель выбрать для подобных запросов. Не выдумывай метрики и "
+        "используй только приведённые значения."
+        + limit_instruction,
+        0.0,
+        "deepseek-v4-pro",
+    )
+    return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -289,6 +411,7 @@ class Handler(SimpleHTTPRequestHandler):
             max_words = int(payload.get("max_words", 200)) if use_word_limit else None
             compare_mode = payload.get("compare_mode", False) is True
             compare_temperature_mode = payload.get("compare_temperature_mode", False) is True
+            compare_models_mode = payload.get("compare_models_mode", False) is True
             use_temperature = payload.get("use_temperature", False) is True
             temperature = float(payload.get("temperature", 1.0)) if use_temperature else None
             use_prompt_limit = payload.get("use_prompt_limit", False) is True
@@ -337,8 +460,36 @@ class Handler(SimpleHTTPRequestHandler):
         if temperature is not None and not 0 <= temperature <= 2:
             self.send_json(400, {"error": "Temperature должна быть от 0 до 2."})
             return
-        if compare_mode and compare_temperature_mode:
+        if sum((compare_mode, compare_temperature_mode, compare_models_mode)) > 1:
             self.send_json(400, {"error": "Выберите только один режим сравнения."})
+            return
+        if compare_models_mode:
+            missing_keys = sorted(
+                {
+                    config["api_key_env"]
+                    for config in MODEL_OPTIONS.values()
+                    if not os.environ.get(config["api_key_env"])
+                }
+            )
+            if missing_keys:
+                self.send_json(
+                    503,
+                    {"error": f"Не настроены ключи: {', '.join(missing_keys)}."},
+                )
+                return
+            try:
+                comparison = compare_models(prompt, max_words, temperature)
+            except HTTPError as error:
+                try:
+                    message = json.load(error).get("error", {}).get("message")
+                except Exception:
+                    message = None
+                self.send_json(error.code, {"error": message or "Ошибка API модели."})
+                return
+            except Exception:
+                self.send_json(502, {"error": "Не удалось сравнить все модели."})
+                return
+            self.send_json(200, comparison)
             return
         if compare_temperature_mode:
             try:
