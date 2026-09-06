@@ -48,6 +48,7 @@
       outline: none; cursor: pointer;
     }
     .model:focus { border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614; }
+    .model:disabled { opacity: .55; cursor: not-allowed; }
     main { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 54px 0; }
     .intro { margin-bottom: 30px; text-align: center; }
     .eyebrow {
@@ -187,6 +188,15 @@
     .solution-card h3, .analysis-card h3 { margin: 0 0 9px; font-size: 14px; }
     .solution-card p, .analysis-card p { margin: 0; white-space: pre-wrap; }
     .solution-card .solution-note { margin: -4px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .solution-metrics {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+      margin: 0 0 12px;
+    }
+    .solution-metrics span {
+      min-width: 0; margin: 0; padding: 7px 8px; border-radius: 9px;
+      background: #f5f6fa; color: var(--muted); font-size: 11px; line-height: 1.35;
+    }
+    .solution-metrics strong { display: block; margin: 0 0 2px; color: var(--ink); font-size: 12px; }
     .solution-card details { margin-bottom: 10px; border-radius: 10px; background: #f5f6fa; padding: 8px 10px; }
     .solution-card summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 700; }
     .solution-card pre { margin: 8px 0 0; white-space: pre-wrap; font: inherit; font-size: 12px; }
@@ -235,6 +245,13 @@
             <span>
               <strong>Сравнить 3 значения temperature</strong>
               <small>Один запрос при 0, 0.7 и 1.2 плюс сравнительный анализ</small>
+            </span>
+          </label>
+          <label class="compare-toggle" for="compare-models-mode">
+            <input id="compare-models-mode" type="checkbox">
+            <span>
+              <strong>Сравнить все 3 модели</strong>
+              <small>Ответы, время, токены, стоимость и итоговый анализ</small>
             </span>
           </label>
           <label class="format-toggle standard-setting" for="use-format">
@@ -339,6 +356,7 @@
     const useFormat = document.querySelector('#use-format');
     const compareMode = document.querySelector('#compare-mode');
     const compareTemperatureMode = document.querySelector('#compare-temperature-mode');
+    const compareModelsMode = document.querySelector('#compare-models-mode');
     const modelSelect = document.querySelector('#model-select');
     const modelLabel = document.querySelector('#model-label');
     const usePromptLimit = document.querySelector('#use-prompt-limit');
@@ -393,6 +411,26 @@
           description.textContent = solution.description;
           card.append(description);
         }
+        if (solution.metrics) {
+          const metrics = document.createElement('div');
+          metrics.className = 'solution-metrics';
+          const cost = Number(solution.metrics.cost_usd || 0);
+          const costText = cost < 0.000001 ? `≈ $${cost.toFixed(8)}` : `≈ $${cost.toFixed(6)}`;
+          const values = [
+            ['Время', `${solution.metrics.elapsed_seconds} сек.`],
+            ['Токены', `${solution.metrics.total_tokens} (${solution.metrics.input_tokens} → ${solution.metrics.output_tokens})`],
+            ['Стоимость', costText],
+          ];
+          for (const [label, value] of values) {
+            const metric = document.createElement('span');
+            const metricLabel = document.createElement('strong');
+            metricLabel.textContent = label;
+            metric.append(metricLabel, document.createTextNode(value));
+            if (label === 'Стоимость') metric.title = solution.metrics.pricing_note || '';
+            metrics.append(metric);
+          }
+          card.append(metrics);
+        }
         if (solution.generated_prompt) {
           const details = document.createElement('details');
           const summary = document.createElement('summary');
@@ -421,16 +459,23 @@
     function updateCompareControl(source) {
       if (source === 'approaches' && compareMode.checked) {
         compareTemperatureMode.checked = false;
+        compareModelsMode.checked = false;
       }
       if (source === 'temperature' && compareTemperatureMode.checked) {
         compareMode.checked = false;
+        compareModelsMode.checked = false;
         useTemperature.checked = false;
       }
-      const enabled = compareMode.checked || compareTemperatureMode.checked;
+      if (source === 'models' && compareModelsMode.checked) {
+        compareMode.checked = false;
+        compareTemperatureMode.checked = false;
+      }
+      const enabled = compareMode.checked || compareTemperatureMode.checked || compareModelsMode.checked;
       useFormat.disabled = enabled;
       finishMode.disabled = enabled;
       finishValue.disabled = enabled || finishMode.value === 'none';
       useTemperature.disabled = compareTemperatureMode.checked;
+      modelSelect.disabled = compareModelsMode.checked;
       document.querySelector('.response-format').classList.toggle('compare-active', enabled);
       updateTemperatureControl();
       resetDialogue();
@@ -523,6 +568,7 @@
     finishMode.addEventListener('change', updateFinishControl);
     compareMode.addEventListener('change', () => updateCompareControl('approaches'));
     compareTemperatureMode.addEventListener('change', () => updateCompareControl('temperature'));
+    compareModelsMode.addEventListener('change', () => updateCompareControl('models'));
     newChat.addEventListener('click', () => {
       resetDialogue();
       prompt.value = '';
@@ -565,7 +611,8 @@
       const selectedFinishMode = finishMode.value;
       const comparisonEnabled = compareMode.checked;
       const temperatureComparisonEnabled = compareTemperatureMode.checked;
-      const anyComparisonEnabled = comparisonEnabled || temperatureComparisonEnabled;
+      const modelComparisonEnabled = compareModelsMode.checked;
+      const anyComparisonEnabled = comparisonEnabled || temperatureComparisonEnabled || modelComparisonEnabled;
       const dialogueMode = !anyComparisonEnabled && selectedFinishMode === 'dialogue';
       const history = dialogueMode ? [...messages] : [];
       if (!dialogueMode || anyComparisonEnabled) resetDialogue();
@@ -574,7 +621,9 @@
       result.className = 'visible loading';
       dialogueStatus.className = 'dialogue-status';
       dialogueStatus.textContent = anyComparisonEnabled
-        ? (temperatureComparisonEnabled
+        ? (modelComparisonEnabled
+          ? 'Отправляем запрос одновременно в три модели…'
+          : temperatureComparisonEnabled
           ? 'Сравниваем ответы при temperature 0, 0.7 и 1.2…'
           : 'Получаем четыре решения и итоговый анализ…')
         : (dialogueMode ? 'Модель анализирует, достаточно ли данных…' : 'Модель формирует ответ…');
@@ -594,6 +643,7 @@
             max_prompt_chars: promptLimit,
             compare_mode: comparisonEnabled,
             compare_temperature_mode: temperatureComparisonEnabled,
+            compare_models_mode: modelComparisonEnabled,
             use_temperature: useTemperature.checked,
             temperature: selectedTemperature,
             use_format: useFormat.checked,
@@ -610,12 +660,16 @@
         if (anyComparisonEnabled) {
           addComparison(
             data,
-            temperatureComparisonEnabled
+            modelComparisonEnabled
+              ? 'Сравнение качества, скорости и ресурсоёмкости'
+              : temperatureComparisonEnabled
               ? 'Анализ точности, креативности и разнообразия'
               : 'Итоговый анализ четырёх решений',
           );
           dialogueStatus.className = 'dialogue-status complete';
-          dialogueStatus.textContent = temperatureComparisonEnabled
+          dialogueStatus.textContent = modelComparisonEnabled
+            ? '✓ Три модели сравнены'
+            : temperatureComparisonEnabled
             ? '✓ Три значения temperature сравнены'
             : '✓ Четыре решения и анализ готовы';
           return;
