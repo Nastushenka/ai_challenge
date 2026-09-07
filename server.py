@@ -1,65 +1,15 @@
 import json
-import os
 import re
-import ssl
-import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+
+from agent import AgentConfigurationError, MODEL_OPTIONS, SimpleAgent
 
 
 ROOT = Path(__file__).parent
-SYSTEM_CA_FILE = Path("/etc/ssl/cert.pem")
 FINAL_MARKER = "[[READY]]"
-MODEL_OPTIONS = {
-    "deepseek-v4-pro": {
-        "label": "DeepSeek V4 Pro",
-        "model_env": "LLM_MODEL",
-        "model_default": "deepseek-v4-pro",
-        "base_url_env": "LLM_BASE_URL",
-        "base_url_default": "https://api.deepseek.com",
-        "api_key_env": "LLM_API_KEY",
-        "disable_reasoning_for_temperature": True,
-    },
-    "gemma-3-4b": {
-        "label": "Gemma 3 4B",
-        "model_env": "HF_GEMMA_MODEL",
-        "model_default": "google/gemma-3-4b-it:cheapest",
-        "base_url_env": "HF_BASE_URL",
-        "base_url_default": "https://router.huggingface.co/v1",
-        "api_key_env": "HF_TOKEN",
-        "disable_reasoning_for_temperature": False,
-        "pricing": {"input": 0.05, "output": 0.10},
-    },
-    "qwen3-8b": {
-        "label": "Qwen 3 8B",
-        "model_env": "HF_QWEN_MODEL",
-        "model_default": "Qwen/Qwen3-8B:cheapest",
-        "base_url_env": "HF_BASE_URL",
-        "base_url_default": "https://router.huggingface.co/v1",
-        "api_key_env": "HF_TOKEN",
-        "disable_reasoning_for_temperature": False,
-        "pricing": {"input": 0.07, "output": 0.18},
-    },
-}
-
-
-def load_local_env():
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, value = line.split("=", 1)
-        os.environ.setdefault(name.strip(), value.strip().strip('"').strip("'"))
-
-
-load_local_env()
 
 
 def truncate_words(text, max_words):
@@ -72,119 +22,19 @@ def truncate_words(text, max_words):
     return text[:cut_at].rstrip(" ,;:.") + "…"
 
 
-def estimate_cost(model_key, usage):
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
-    cached_tokens = int(
-        (usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
-    )
-    if model_key == "deepseek-v4-pro":
-        now = datetime.now(timezone.utc)
-        is_peak = now.weekday() < 5 and (1 <= now.hour < 4 or 6 <= now.hour < 10)
-        multiplier = 2 if is_peak else 1
-        cache_hit_rate = 0.022 * multiplier
-        cache_miss_rate = 0.66 * multiplier
-        output_rate = 1.98 * multiplier
-        cost = (
-            cached_tokens * cache_hit_rate
-            + max(0, input_tokens - cached_tokens) * cache_miss_rate
-            + output_tokens * output_rate
-        ) / 1_000_000
-        period = "peak" if is_peak else "off-peak"
-        return cost, f"Расчёт по тарифу DeepSeek {period}"
-
-    pricing = MODEL_OPTIONS[model_key]["pricing"]
-    cost = (
-        input_tokens * pricing["input"] + output_tokens * pricing["output"]
-    ) / 1_000_000
-    return cost, "Расчёт по тарифу Hugging Face :cheapest до бесплатных кредитов"
-
-
-def call_model_result(
-    api_key, input_value, instructions=None, temperature=None, model_key="deepseek-v4-pro"
-):
-    model_config = MODEL_OPTIONS[model_key]
-    request_body = {
-        "model": os.environ.get(
-            model_config["model_env"], model_config["model_default"]
-        ),
-        "input": input_value,
-    }
-    if instructions:
-        request_body["instructions"] = instructions
-    if temperature is not None:
-        request_body["temperature"] = temperature
-        if model_config["disable_reasoning_for_temperature"]:
-            request_body["reasoning"] = {"effort": "none"}
-    body = json.dumps(request_body).encode()
-    api_url = os.environ.get(
-        model_config["base_url_env"], model_config["base_url_default"]
-    ).rstrip("/")
-    request = Request(
-        f"{api_url}/responses",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-    ssl_context = ssl.create_default_context(
-        cafile=str(SYSTEM_CA_FILE) if SYSTEM_CA_FILE.exists() else None
-    )
-    started_at = time.perf_counter()
-    for attempt in range(2):
-        try:
-            with urlopen(request, timeout=90, context=ssl_context) as response:
-                result = json.load(response)
-            break
-        except HTTPError as error:
-            if attempt == 0 and error.code in {429, 500, 502, 503, 504}:
-                continue
-            raise
-    elapsed_seconds = time.perf_counter() - started_at
-    text = "".join(
-        content.get("text", "")
-        for item in result.get("output", [])
-        if item.get("type") == "message"
-        for content in item.get("content", [])
-        if content.get("type") == "output_text"
-    )
-    usage = result.get("usage") or {}
-    cost_usd, pricing_note = estimate_cost(model_key, usage)
-    return {
-        "text": text,
-        "elapsed_seconds": round(elapsed_seconds, 3),
-        "usage": {
-            "input_tokens": int(usage.get("input_tokens") or 0),
-            "output_tokens": int(usage.get("output_tokens") or 0),
-            "total_tokens": int(usage.get("total_tokens") or 0),
-        },
-        "cost_usd": round(cost_usd, 8),
-        "pricing_note": pricing_note,
-    }
-
-
-def call_model(
-    api_key, input_value, instructions=None, temperature=None, model_key="deepseek-v4-pro"
-):
-    return call_model_result(
-        api_key, input_value, instructions, temperature, model_key
-    )["text"]
-
-
 def compare_solutions(
-    api_key, prompt, max_words, temperature=None, model_key="deepseek-v4-pro"
+    prompt, max_words, temperature=None, model_key="deepseek-v4-pro"
 ):
+    agent = SimpleAgent(model_key)
     limit_instruction = (
         f" Не превышай {max_words} слов." if max_words is not None else ""
     )
 
     def direct_solution():
-        return call_model(api_key, prompt, temperature=temperature, model_key=model_key)
+        return agent.ask(prompt, temperature=temperature)
 
     def step_by_step_solution():
-        return call_model(
-            api_key,
+        return agent.ask(
             prompt,
             "Решай пошагово и показывай проверяемую логику решения. "
             "Структура ответа: 1) кратко сформулируй цель; 2) перечисли исходные "
@@ -194,12 +44,10 @@ def compare_solutions(
             "ответ. Не выдумывай отсутствующие данные: явно отмечай неоднозначность. "
             f"Отвечай на русском языке.{limit_instruction}",
             temperature,
-            model_key,
         )
 
     def prompt_engineering_solution():
-        generated_prompt = call_model(
-            api_key,
+        generated_prompt = agent.ask(
             prompt,
             "Ты — промпт-инженер. Преобразуй задачу пользователя в точный, "
             "самодостаточный промпт для другой языковой модели. Не решай исходную "
@@ -211,22 +59,17 @@ def compare_solutions(
             "Промпт должен быть на русском языке и подходить для использования без "
             "дополнительного контекста.",
             temperature,
-            model_key,
         )
-        answer = call_model(
-            api_key, generated_prompt, temperature=temperature, model_key=model_key
-        )
+        answer = agent.ask(generated_prompt, temperature=temperature)
         return generated_prompt, answer
 
     def expert_group_solution():
-        return call_model(
-            api_key,
+        return agent.ask(
             prompt,
             "Создай группу из трёх экспертов: аналитика, инженера и критика. "
             "Пусть каждый независимо предложит своё решение задачи и объяснит ход мысли. "
             f"Чётко раздели ответы экспертов. Отвечай на русском языке.{limit_instruction}",
             temperature,
-            model_key,
         )
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -269,19 +112,18 @@ def compare_solutions(
     comparison_text = "\n\n".join(
         f"{solution['title']}\n{solution['answer']}" for solution in solutions
     )
-    analysis = call_model(
-        api_key,
+    analysis = agent.ask(
         f"Исходная задача:\n{prompt}\n\nПолученные решения:\n{comparison_text}",
         "Проанализируй четыре решения на русском языке. Сравни их корректность, "
         "полноту, понятность и надёжность. Укажи совпадения и противоречия, выбери "
         f"лучший подход и сформулируй итоговый вывод.{limit_instruction}",
         temperature,
-        model_key,
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
 
-def compare_temperatures(api_key, prompt, max_words, model_key="deepseek-v4-pro"):
+def compare_temperatures(prompt, max_words, model_key="deepseek-v4-pro"):
+    agent = SimpleAgent(model_key)
     limit_instruction = (
         f" Не превышай {max_words} слов." if max_words is not None else ""
     )
@@ -293,7 +135,7 @@ def compare_temperatures(api_key, prompt, max_words, model_key="deepseek-v4-pro"
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
-            value: executor.submit(call_model, api_key, prompt, None, value, model_key)
+            value: executor.submit(agent.ask, prompt, None, value)
             for _, _, value, _ in settings
         }
         solutions = [
@@ -310,8 +152,7 @@ def compare_temperatures(api_key, prompt, max_words, model_key="deepseek-v4-pro"
     comparison_text = "\n\n".join(
         f"{solution['title']}\n{solution['answer']}" for solution in solutions
     )
-    analysis = call_model(
-        api_key,
+    analysis = agent.ask(
         f"Исходная задача:\n{prompt}\n\nОтветы:\n{comparison_text}",
         "Сравни три ответа, созданные с разными значениями temperature. "
         "Проанализируй каждый по критериям: 1) точность, 2) креативность, "
@@ -320,7 +161,6 @@ def compare_temperatures(api_key, prompt, max_words, model_key="deepseek-v4-pro"
         "типов задач лучше подходят temperature 0, 0.7 и 1.2. Отвечай на русском "
         f"языке и структурированно.{limit_instruction}",
         0.0,
-        model_key,
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
@@ -334,11 +174,7 @@ def compare_models(prompt, max_words, temperature=None):
     instructions = f"Отвечай на русском языке.{limit_instruction}"
 
     def run_model(model_key):
-        model_config = MODEL_OPTIONS[model_key]
-        api_key = os.environ.get(model_config["api_key_env"])
-        result = call_model_result(
-            api_key, prompt, instructions, temperature, model_key
-        )
+        result = SimpleAgent(model_key).run(prompt, instructions, temperature)
         result["text"] = truncate_words(result["text"], max_words)
         return model_key, result
 
@@ -375,9 +211,7 @@ def compare_models(prompt, max_words, temperature=None):
         f"Ответ:\n{solution['answer']}"
         for solution in solutions
     )
-    deepseek_key = os.environ[MODEL_OPTIONS["deepseek-v4-pro"]["api_key_env"]]
-    analysis = call_model(
-        deepseek_key,
+    analysis = SimpleAgent("deepseek-v4-pro").ask(
         f"Исходный запрос:\n{prompt}\n\nРезультаты моделей:\n{comparison_text}",
         "Сравни ответы трёх моделей на русском языке. Оцени: 1) качество и "
         "корректность ответа, 2) скорость по измеренному времени, 3) ресурсоёмкость "
@@ -387,7 +221,6 @@ def compare_models(prompt, max_words, temperature=None):
         "используй только приведённые значения."
         + limit_instruction,
         0.0,
-        "deepseek-v4-pro",
     )
     return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
 
@@ -431,16 +264,10 @@ class Handler(SimpleHTTPRequestHandler):
         if model_key not in MODEL_OPTIONS:
             self.send_json(400, {"error": "Выберите доступную модель."})
             return
-        model_config = MODEL_OPTIONS[model_key]
-        api_key = os.environ.get(model_config["api_key_env"])
-        if not api_key:
-            self.send_json(
-                503,
-                {
-                    "error": f"На сервере не настроен {model_config['api_key_env']} "
-                    f"для модели {model_config['label']}."
-                },
-            )
+        try:
+            selected_agent = SimpleAgent(model_key)
+        except AgentConfigurationError as error:
+            self.send_json(503, {"error": str(error)})
             return
         if use_prompt_limit and not 1 <= max_prompt_chars <= 12000:
             self.send_json(
@@ -464,18 +291,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Выберите только один режим сравнения."})
             return
         if compare_models_mode:
-            missing_keys = sorted(
-                {
-                    config["api_key_env"]
-                    for config in MODEL_OPTIONS.values()
-                    if not os.environ.get(config["api_key_env"])
-                }
-            )
-            if missing_keys:
-                self.send_json(
-                    503,
-                    {"error": f"Не настроены ключи: {', '.join(missing_keys)}."},
-                )
+            try:
+                for candidate in MODEL_OPTIONS:
+                    SimpleAgent(candidate)
+            except AgentConfigurationError as error:
+                self.send_json(503, {"error": str(error)})
                 return
             try:
                 comparison = compare_models(prompt, max_words, temperature)
@@ -493,9 +313,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if compare_temperature_mode:
             try:
-                comparison = compare_temperatures(
-                    api_key, prompt, max_words, model_key
-                )
+                comparison = compare_temperatures(prompt, max_words, model_key)
             except HTTPError as error:
                 try:
                     message = json.load(error).get("error", {}).get("message")
@@ -511,7 +329,7 @@ class Handler(SimpleHTTPRequestHandler):
         if compare_mode:
             try:
                 comparison = compare_solutions(
-                    api_key, prompt, max_words, temperature, model_key
+                    prompt, max_words, temperature, model_key
                 )
             except HTTPError as error:
                 try:
@@ -593,12 +411,10 @@ class Handler(SimpleHTTPRequestHandler):
                 "Не используй лишние вступления."
             )
         try:
-            answer = call_model(
-                api_key,
+            answer = selected_agent.ask(
                 messages if dialogue_mode else prompt,
                 " ".join(instructions),
                 temperature,
-                model_key,
             )
         except HTTPError as error:
             try:
