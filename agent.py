@@ -1,6 +1,7 @@
 import json
 import os
 import ssl
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).parent
 SYSTEM_CA_FILE = Path("/etc/ssl/cert.pem")
+HISTORY_FILE = ROOT / "conversation_history.json"
 MODEL_OPTIONS = {
     "deepseek-v4-pro": {
         "label": "DeepSeek V4 Pro",
@@ -62,15 +64,72 @@ def load_local_env():
 load_local_env()
 
 
+class ConversationStore:
+    """Thread-safe JSON storage for conversations that survive restarts."""
+
+    _lock = threading.RLock()
+
+    def __init__(self, path=HISTORY_FILE, max_messages=20):
+        self.path = Path(path)
+        self.max_messages = max_messages
+
+    def get(self, session_id):
+        with self._lock:
+            messages = self._read_all().get(session_id, [])
+            return [dict(message) for message in messages]
+
+    def save(self, session_id, messages):
+        clean_messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in messages[-self.max_messages :]
+        ]
+        with self._lock:
+            conversations = self._read_all()
+            conversations[session_id] = clean_messages
+            self._write_all(conversations)
+
+    def clear(self, session_id):
+        with self._lock:
+            conversations = self._read_all()
+            if session_id in conversations:
+                del conversations[session_id]
+                self._write_all(conversations)
+
+    def _read_all(self):
+        if not self.path.exists():
+            return {}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_all(self, conversations):
+        temporary_path = self.path.with_suffix(".tmp")
+        temporary_path.write_text(
+            json.dumps(conversations, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary_path.replace(self.path)
+
+
 class SimpleAgent:
     """Encapsulates one LLM model, its HTTP request, and response parsing."""
 
-    def __init__(self, model_key="deepseek-v4-pro", api_key=None):
+    def __init__(
+        self,
+        model_key="deepseek-v4-pro",
+        api_key=None,
+        session_id=None,
+        history_file=HISTORY_FILE,
+    ):
         if model_key not in MODEL_OPTIONS:
             raise ValueError("Неизвестная модель агента.")
         self.model_key = model_key
         self.config = MODEL_OPTIONS[model_key]
         self.api_key = api_key or os.environ.get(self.config["api_key_env"])
+        self.session_id = session_id
+        self.store = ConversationStore(history_file) if session_id else None
         if not self.api_key:
             raise AgentConfigurationError(
                 f"На сервере не настроен {self.config['api_key_env']} "
@@ -84,6 +143,34 @@ class SimpleAgent:
     def ask(self, user_request, instructions=None, temperature=None):
         """Accept a user request and return only the model's text answer."""
         return self.run(user_request, instructions, temperature)["text"]
+
+    @property
+    def history(self):
+        return self.store.get(self.session_id) if self.store else []
+
+    def chat(self, user_request, instructions=None, temperature=None):
+        """Continue a persistent conversation and save the new exchange."""
+        if not self.store:
+            raise AgentConfigurationError("Для диалога не указан session_id.")
+        messages = self.history
+        messages.append({"role": "user", "content": user_request})
+        result = self.run(messages, instructions, temperature)
+        messages.append({"role": "assistant", "content": result["text"]})
+        self.store.save(self.session_id, messages)
+        return result
+
+    def clear_history(self):
+        if self.store:
+            self.store.clear(self.session_id)
+
+    def replace_last_answer(self, answer):
+        """Keep stored history identical to the answer shown in the interface."""
+        if not self.store:
+            return
+        messages = self.history
+        if messages and messages[-1].get("role") == "assistant":
+            messages[-1]["content"] = answer
+            self.store.save(self.session_id, messages)
 
     def run(self, user_request, instructions=None, temperature=None):
         """Send a request to the LLM and return text plus execution metrics."""

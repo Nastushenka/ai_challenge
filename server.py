@@ -4,12 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlparse
 
-from agent import AgentConfigurationError, MODEL_OPTIONS, SimpleAgent
+from agent import AgentConfigurationError, ConversationStore, MODEL_OPTIONS, SimpleAgent
 
 
 ROOT = Path(__file__).parent
 FINAL_MARKER = "[[READY]]"
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
 def truncate_words(text, max_words):
@@ -271,7 +273,33 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
 
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/history":
+            super().do_GET()
+            return
+        session_id = parse_qs(parsed.query).get("session_id", [""])[0]
+        if not SESSION_ID_PATTERN.fullmatch(session_id):
+            self.send_json(400, {"error": "Некорректный идентификатор диалога."})
+            return
+        self.send_json(200, {"history": ConversationStore().get(session_id)})
+
     def do_POST(self):
+        if self.path == "/api/reset":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length))
+                session_id = payload.get("session_id", "")
+            except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
+                self.send_json(400, {"error": "Некорректный запрос."})
+                return
+            if not SESSION_ID_PATTERN.fullmatch(session_id):
+                self.send_json(400, {"error": "Некорректный идентификатор диалога."})
+                return
+            ConversationStore().clear(session_id)
+            self.send_json(200, {"cleared": True})
+            return
+
         if self.path != "/api/chat":
             self.send_error(404)
             return
@@ -295,7 +323,7 @@ class Handler(SimpleHTTPRequestHandler):
             )
             finish_mode = payload.get("finish_mode", "none")
             finish_value = payload.get("finish_value", "").strip()
-            history = payload.get("history", [])
+            session_id = payload.get("session_id", "")
         except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
             self.send_json(400, {"error": "Некорректный запрос."})
             return
@@ -306,8 +334,11 @@ class Handler(SimpleHTTPRequestHandler):
         if model_key not in MODEL_OPTIONS:
             self.send_json(400, {"error": "Выберите доступную модель."})
             return
+        if not SESSION_ID_PATTERN.fullmatch(session_id):
+            self.send_json(400, {"error": "Некорректный идентификатор диалога."})
+            return
         try:
-            selected_agent = SimpleAgent(model_key)
+            selected_agent = SimpleAgent(model_key, session_id=session_id)
         except AgentConfigurationError as error:
             self.send_json(503, {"error": str(error)})
             return
@@ -398,27 +429,6 @@ class Handler(SimpleHTTPRequestHandler):
                 {"error": f"Условие завершения не должно превышать {max_finish_length} символов."},
             )
             return
-        if not isinstance(history, list) or len(history) > 20:
-            self.send_json(400, {"error": "История диалога слишком длинная."})
-            return
-
-        messages = []
-        for item in history:
-            if not isinstance(item, dict):
-                self.send_json(400, {"error": "Некорректная история диалога."})
-                return
-            role = item.get("role")
-            content = item.get("content")
-            if role not in {"user", "assistant"} or not isinstance(content, str):
-                self.send_json(400, {"error": "Некорректная история диалога."})
-                return
-            content = content.strip()
-            if not content or len(content) > 12000:
-                self.send_json(400, {"error": "Некорректная история диалога."})
-                return
-            messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": prompt})
-
         dialogue_mode = finish_mode == "dialogue"
         instructions = ["Отвечай на русском языке."]
         if max_words is not None:
@@ -453,8 +463,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "Не используй лишние вступления."
             )
         try:
-            agent_result = selected_agent.run(
-                messages if dialogue_mode else prompt,
+            agent_result = selected_agent.chat(
+                prompt,
                 " ".join(instructions),
                 temperature,
             )
@@ -477,6 +487,7 @@ class Handler(SimpleHTTPRequestHandler):
             answer = answer.split(finish_value, 1)[0].rstrip()
             complete = True
         answer = truncate_words(answer, max_words)
+        selected_agent.replace_last_answer(answer)
         self.send_json(
             200,
             {
