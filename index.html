@@ -27,7 +27,7 @@
         #f8fafc;
     }
     .shell {
-      width: min(760px, calc(100% - 32px));
+      width: min(1180px, calc(100% - 32px));
       min-height: 100vh;
       margin: auto;
       padding: 32px 0 24px;
@@ -49,17 +49,19 @@
     }
     .model:focus { border-color: #a8a8ed; box-shadow: 0 0 0 3px #5b5bd614; }
     .model:disabled { opacity: .55; cursor: not-allowed; }
-    main { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 54px 0; }
-    .intro { margin-bottom: 30px; text-align: center; }
+    main { flex: 1; padding: 36px 0; }
+    .workspace { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 24px; align-items: start; }
+    .chat-workspace { min-width: 0; }
+    .intro { margin-bottom: 22px; text-align: left; }
     .eyebrow {
       display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px;
       border-radius: 999px; color: var(--accent); background: var(--accent-soft);
       font-size: 12px; font-weight: 700;
     }
     h1 { margin: 16px 0 0; font-size: clamp(34px, 7vw, 52px); letter-spacing: -.045em; line-height: 1.05; }
-    .intro p { max-width: 580px; margin: 14px auto 0; color: var(--muted); line-height: 1.6; }
+    .intro p { max-width: 620px; margin: 12px 0 0; color: var(--muted); line-height: 1.6; }
     .response-format {
-      width: min(100%, 490px); margin: 16px auto 0; padding: 13px 16px; border: 1px solid var(--line);
+      width: 100%; margin: 0; padding: 16px; border: 1px solid var(--line);
       border-radius: 14px; background: #ffffffa8; color: var(--muted); font-size: 12px;
       text-align: left; line-height: 1.55;
     }
@@ -201,10 +203,39 @@
     .solution-card summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 700; }
     .solution-card pre { margin: 8px 0 0; white-space: pre-wrap; font: inherit; font-size: 12px; }
     .analysis-card { grid-column: 1 / -1; border-color: #b8b8ef; background: var(--accent-soft); }
+    .panel-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .panel-title h2 { margin: 0; font-size: 16px; }
+    .panel-title span { color: var(--muted); font-size: 12px; }
+    .settings-group { border-top: 1px solid var(--line); padding: 0; }
+    .settings-group > summary {
+      padding: 13px 0; cursor: pointer; color: var(--ink); font-size: 14px; font-weight: 750;
+      list-style: none; display: flex; align-items: center; justify-content: space-between;
+    }
+    .settings-group > summary::-webkit-details-marker { display: none; }
+    .settings-group > summary::after { content: '+'; color: var(--accent); font-size: 18px; font-weight: 400; }
+    .settings-group[open] > summary::after { content: '−'; }
+    .settings-content { padding-bottom: 13px; }
+    .settings-content > :first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+    .token-estimate { display: inline-block; margin-left: 8px; }
+    .response-metrics {
+      display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px;
+    }
+    .response-metrics span {
+      padding: 6px 9px; border-radius: 999px; background: #eef0f5;
+      color: var(--muted); font-size: 12px; line-height: 1.2;
+    }
+    .message + .response-metrics { justify-self: start; }
+    .analysis-card .response-metrics { margin-top: 12px; }
+    .settings-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
     footer { text-align: center; }
+    @media (max-width: 860px) {
+      .workspace { grid-template-columns: 1fr; }
+      .response-format { order: 2; }
+      .chat-workspace { order: 1; }
+    }
     @media (max-width: 560px) {
       .shell { padding-top: 20px; }
-      main { padding: 40px 0; }
+      main { padding: 24px 0; }
       .hint { max-width: 210px; }
       .model { padding-inline: 9px; }
       .comparison-grid { grid-template-columns: 1fr; }
@@ -228,120 +259,139 @@
     </header>
 
     <main>
-      <section class="intro">
-        <span class="eyebrow" id="model-label">✦ Работает на DeepSeek V4 Pro</span>
-        <h1>О чём хотите спросить?</h1>
-        <p>Напишите вопрос — интерфейс отправит его в модель и покажет ответ.</p>
-        <div class="response-format">
-          <label class="compare-toggle" for="compare-mode">
-            <input id="compare-mode" type="checkbox">
-            <span>
-              <strong>Сравнить 4 подхода к решению</strong>
-              <small>Прямой ответ, пошаговый, улучшенный промпт и группа экспертов</small>
-            </span>
-          </label>
-          <label class="compare-toggle" for="compare-temperature-mode">
-            <input id="compare-temperature-mode" type="checkbox">
-            <span>
-              <strong>Сравнить 3 значения temperature</strong>
-              <small>Один запрос при 0, 0.7 и 1.2 плюс сравнительный анализ</small>
-            </span>
-          </label>
-          <label class="compare-toggle" for="compare-models-mode">
-            <input id="compare-models-mode" type="checkbox">
-            <span>
-              <strong>Сравнить все 3 модели</strong>
-              <small>Ответы, время, токены, стоимость и итоговый анализ</small>
-            </span>
-          </label>
-          <label class="format-toggle standard-setting" for="use-format">
-            <input id="use-format" type="checkbox" checked>
-            <span>Использовать структурированный формат</span>
-          </label>
-          <div class="format-details standard-setting">
-            <ol>
-              <li>«Краткий ответ» — 1–2 предложения</li>
-              <li>«Основные пункты» — список из 2–5 пунктов</li>
-              <li>«Итог» — одно заключительное предложение</li>
-            </ol>
+      <div class="workspace">
+        <aside class="response-format" aria-label="Настройки запроса">
+          <div class="panel-title">
+            <h2>Настройки</h2>
+            <span>задания 2–5</span>
           </div>
-          <div class="prompt-limit-control">
-            <label class="prompt-limit-toggle" for="use-prompt-limit">
-              <input id="use-prompt-limit" type="checkbox">
-              <strong>Ограничить длину запроса</strong>
-            </label>
-            <div class="prompt-limit-row">
-              <label for="max-prompt-chars">Максимум символов</label>
-              <input id="max-prompt-chars" type="number" min="1" max="12000" step="100" value="1000" inputmode="numeric" disabled>
-            </div>
-            <span class="prompt-limit-help">При превышении запрос не отправится. Общий предел — 12 000 символов.</span>
-          </div>
-          <div class="word-limit-control">
-            <label class="word-limit-toggle" for="use-word-limit">
-              <input id="use-word-limit" type="checkbox">
-              <strong>Ограничить длину ответа</strong>
-            </label>
-            <div class="word-limit-row">
-              <label for="max-words">Максимум слов</label>
-              <input id="max-words" type="number" min="20" max="2000" step="10" value="200" inputmode="numeric" disabled>
-            </div>
-            <span class="word-limit-help">Ограничение применяется в любом режиме только при включённом флаге.</span>
-          </div>
-          <div class="temperature-control">
-            <label class="temperature-toggle" for="use-temperature">
-              <input id="use-temperature" type="checkbox">
-              <strong>Настроить temperature</strong>
-            </label>
-            <div class="temperature-row">
-              <label for="temperature-range" hidden>Temperature</label>
-              <input id="temperature-range" type="range" min="0" max="2" step="0.1" value="1" disabled>
-              <label for="temperature-value" hidden>Значение temperature</label>
-              <input id="temperature-value" type="number" min="0" max="2" step="0.1" value="1" disabled>
-            </div>
-            <span class="temperature-help">0 — точнее и стабильнее, 2 — разнообразнее. При включении thinking mode отключается.</span>
-          </div>
-          <div class="finish-control standard-setting">
-            <strong>Диалог до готового результата</strong>
-            <div class="finish-row">
-              <label for="finish-mode" hidden>Режим диалога</label>
-              <select id="finish-mode">
-                <option value="none">Обычный ответ</option>
-                <option value="instruction">Явная инструкция</option>
-                <option value="sequence">Stop sequence</option>
-                <option value="dialogue" selected>Уточнять до готовности</option>
-              </select>
-              <label for="finish-value" hidden>Критерий готовности</label>
-              <input id="finish-value" type="text" maxlength="500" value="Когда собраны все данные, необходимые для точного и полезного результата">
-            </div>
-            <span class="finish-help" id="finish-help">Модель задаёт по одному вопросу, затем выдаёт итог.</span>
-          </div>
-        </div>
-      </section>
 
-      <form id="chat-form">
-        <label for="prompt" hidden>Ваш вопрос</label>
-        <textarea id="prompt" maxlength="12000" placeholder="Например: составь план изучения английского на месяц…" required></textarea>
-        <div class="actions">
-          <span class="hint">
-            Enter — отправить · Shift + Enter — новая строка
-            <span class="prompt-count" id="prompt-count" aria-live="polite">0 / 12 000 символов</span>
-          </span>
-          <button class="send" type="submit" aria-label="Отправить вопрос">↑</button>
-        </div>
-      </form>
+          <details class="settings-group" open>
+            <summary>Режим запуска</summary>
+            <div class="settings-content">
+              <label class="compare-toggle" for="compare-mode">
+                <input id="compare-mode" type="checkbox">
+                <span><strong>4 подхода</strong><small>Прямой, пошаговый, улучшенный промпт и эксперты</small></span>
+              </label>
+              <label class="compare-toggle" for="compare-temperature-mode">
+                <input id="compare-temperature-mode" type="checkbox">
+                <span><strong>3 значения temperature</strong><small>0, 0.7 и 1.2 с итоговым сравнением</small></span>
+              </label>
+              <label class="compare-toggle" for="compare-models-mode">
+                <input id="compare-models-mode" type="checkbox">
+                <span><strong>3 модели</strong><small>Качество, скорость, токены и стоимость</small></span>
+              </label>
+              <p class="settings-note">Без флагов выполняется один обычный запрос.</p>
+            </div>
+          </details>
 
-      <div class="examples" id="examples">
-        <button type="button">Объясни простыми словами, что такое API</button>
-        <button type="button">Придумай 5 идей для поста</button>
-        <button type="button">Составь план на неделю</button>
+          <details class="settings-group" open>
+            <summary>Формат и завершение</summary>
+            <div class="settings-content">
+              <label class="format-toggle standard-setting" for="use-format">
+                <input id="use-format" type="checkbox" checked>
+                <span>Структурированный ответ</span>
+              </label>
+              <div class="format-details standard-setting">
+                <ol>
+                  <li>Краткий ответ</li>
+                  <li>Основные пункты</li>
+                  <li>Итог</li>
+                </ol>
+              </div>
+              <div class="finish-control standard-setting">
+                <strong>Завершение ответа</strong>
+                <div class="finish-row">
+                  <label for="finish-mode" hidden>Режим завершения</label>
+                  <select id="finish-mode">
+                    <option value="none">Обычный ответ</option>
+                    <option value="instruction">Явная инструкция</option>
+                    <option value="sequence">Stop sequence</option>
+                    <option value="dialogue" selected>Уточнять до готовности</option>
+                  </select>
+                  <label for="finish-value" hidden>Условие завершения</label>
+                  <input id="finish-value" type="text" maxlength="500" value="Когда собраны все данные, необходимые для точного и полезного результата">
+                </div>
+                <span class="finish-help" id="finish-help">Модель задаёт по одному вопросу, затем выдаёт итог.</span>
+              </div>
+            </div>
+          </details>
+
+          <details class="settings-group">
+            <summary>Ограничения и вариативность</summary>
+            <div class="settings-content">
+              <div class="prompt-limit-control">
+                <label class="prompt-limit-toggle" for="use-prompt-limit">
+                  <input id="use-prompt-limit" type="checkbox">
+                  <strong>Ограничить запрос</strong>
+                </label>
+                <div class="prompt-limit-row">
+                  <label for="max-prompt-chars">Символов</label>
+                  <input id="max-prompt-chars" type="number" min="1" max="12000" step="100" value="1000" inputmode="numeric" disabled>
+                </div>
+                <span class="prompt-limit-help">Общий предел — 12 000 символов.</span>
+              </div>
+              <div class="word-limit-control">
+                <label class="word-limit-toggle" for="use-word-limit">
+                  <input id="use-word-limit" type="checkbox">
+                  <strong>Ограничить ответ</strong>
+                </label>
+                <div class="word-limit-row">
+                  <label for="max-words">Слов</label>
+                  <input id="max-words" type="number" min="20" max="2000" step="10" value="200" inputmode="numeric" disabled>
+                </div>
+              </div>
+              <div class="temperature-control">
+                <label class="temperature-toggle" for="use-temperature">
+                  <input id="use-temperature" type="checkbox">
+                  <strong>Настроить temperature</strong>
+                </label>
+                <div class="temperature-row">
+                  <label for="temperature-range" hidden>Temperature</label>
+                  <input id="temperature-range" type="range" min="0" max="2" step="0.1" value="1" disabled>
+                  <label for="temperature-value" hidden>Значение temperature</label>
+                  <input id="temperature-value" type="number" min="0" max="2" step="0.1" value="1" disabled>
+                </div>
+                <span class="temperature-help">0 — стабильнее, 2 — разнообразнее.</span>
+              </div>
+            </div>
+          </details>
+        </aside>
+
+        <section class="chat-workspace">
+          <section class="intro">
+            <span class="eyebrow" id="model-label">✦ Работает на DeepSeek V4 Pro</span>
+            <h1>О чём хотите спросить?</h1>
+            <p>Обычный чат, эксперимент с промптами, temperature или сравнение моделей — всё в одном рабочем окне.</p>
+          </section>
+
+          <form id="chat-form">
+            <label for="prompt" hidden>Ваш вопрос</label>
+            <textarea id="prompt" maxlength="12000" placeholder="Напишите запрос для Nastia Chat…" required></textarea>
+            <div class="actions">
+              <span class="hint">
+                Enter — отправить · Shift + Enter — новая строка
+                <span class="prompt-count" id="prompt-count" aria-live="polite">0 / 12 000 символов</span>
+                <span class="token-estimate" id="token-estimate">≈ 0 токенов</span>
+              </span>
+              <button class="send" type="submit" aria-label="Отправить вопрос">↑</button>
+            </div>
+          </form>
+
+          <div class="examples" id="examples">
+            <button type="button">Объясни простыми словами, что такое API</button>
+            <button type="button">Реши логическую задачу пошагово</button>
+            <button type="button">Придумай 5 идей для поста</button>
+          </div>
+          <section id="result" aria-live="polite">
+            <div class="result-head">
+              <span class="dialogue-status" id="dialogue-status"></span>
+              <button class="new-chat" id="new-chat" type="button">Очистить</button>
+            </div>
+            <div class="messages" id="messages"></div>
+          </section>
+        </section>
       </div>
-      <section id="result" aria-live="polite">
-        <div class="result-head">
-          <span class="dialogue-status" id="dialogue-status"></span>
-          <button class="new-chat" id="new-chat" type="button">Новый диалог</button>
-        </div>
-        <div class="messages" id="messages"></div>
-      </section>
     </main>
 
     <footer>Ключи API хранятся на сервере и не передаются в браузер.</footer>
@@ -362,6 +412,7 @@
     const usePromptLimit = document.querySelector('#use-prompt-limit');
     const maxPromptChars = document.querySelector('#max-prompt-chars');
     const promptCount = document.querySelector('#prompt-count');
+    const tokenEstimate = document.querySelector('#token-estimate');
     const useWordLimit = document.querySelector('#use-word-limit');
     const maxWords = document.querySelector('#max-words');
     const useTemperature = document.querySelector('#use-temperature');
@@ -394,6 +445,26 @@
       message.className = `message ${role}`;
       message.textContent = text;
       messagesView.append(message);
+    }
+
+    function createMetrics(metrics) {
+      if (!metrics) return null;
+      const row = document.createElement('div');
+      row.className = 'response-metrics';
+      const cost = Number(metrics.cost_usd || 0);
+      const values = [
+        `${metrics.elapsed_seconds} сек.`,
+        `${Number(metrics.total_tokens || 0).toLocaleString('ru-RU')} токенов`,
+        `${Number(metrics.input_tokens || 0).toLocaleString('ru-RU')} вход → ${Number(metrics.output_tokens || 0).toLocaleString('ru-RU')} выход`,
+        cost < 0.000001 ? `≈ $${cost.toFixed(8)}` : `≈ $${cost.toFixed(6)}`,
+      ];
+      for (const value of values) {
+        const item = document.createElement('span');
+        item.textContent = value;
+        row.append(item);
+      }
+      row.title = metrics.pricing_note || '';
+      return row;
     }
 
     function addComparison(data, analysisHeading = 'Итоговый анализ четырёх решений') {
@@ -452,6 +523,8 @@
       const analysisText = document.createElement('p');
       analysisText.textContent = data.analysis || 'Анализ не получен.';
       analysis.append(analysisTitle, analysisText);
+      const analysisMetrics = createMetrics(data.analysis_metrics);
+      if (analysisMetrics) analysis.append(analysisMetrics);
       grid.append(analysis);
       messagesView.append(grid);
     }
@@ -493,6 +566,8 @@
       const limit = usePromptLimit.checked ? clampPromptLimit(maxPromptChars.value) : 12000;
       prompt.maxLength = limit;
       promptCount.textContent = `${prompt.value.length.toLocaleString('ru-RU')} / ${limit.toLocaleString('ru-RU')} символов`;
+      const estimatedTokens = prompt.value.trim() ? Math.max(1, Math.ceil(prompt.value.length / 3)) : 0;
+      tokenEstimate.textContent = `≈ ${estimatedTokens.toLocaleString('ru-RU')} токенов`;
       promptCount.classList.toggle('over', prompt.value.length > limit);
     }
 
@@ -676,6 +751,8 @@
         }
         const answer = data.answer || 'Модель вернула пустой ответ.';
         addMessage('assistant', answer);
+        const metrics = createMetrics(data.metrics);
+        if (metrics) messagesView.append(metrics);
         messages.push({ role: 'assistant', content: answer });
         dialogueStatus.className = data.complete ? 'dialogue-status complete' : 'dialogue-status';
         if (dialogueMode) {

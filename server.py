@@ -22,6 +22,18 @@ def truncate_words(text, max_words):
     return text[:cut_at].rstrip(" ,;:.") + "…"
 
 
+def result_metrics(result):
+    usage = result["usage"]
+    return {
+        "elapsed_seconds": result["elapsed_seconds"],
+        "input_tokens": usage["input_tokens"],
+        "output_tokens": usage["output_tokens"],
+        "total_tokens": usage["total_tokens"],
+        "cost_usd": result["cost_usd"],
+        "pricing_note": result["pricing_note"],
+    }
+
+
 def compare_solutions(
     prompt, max_words, temperature=None, model_key="deepseek-v4-pro"
 ):
@@ -31,10 +43,10 @@ def compare_solutions(
     )
 
     def direct_solution():
-        return agent.ask(prompt, temperature=temperature)
+        return agent.run(prompt, temperature=temperature)
 
     def step_by_step_solution():
-        return agent.ask(
+        return agent.run(
             prompt,
             "Решай пошагово и показывай проверяемую логику решения. "
             "Структура ответа: 1) кратко сформулируй цель; 2) перечисли исходные "
@@ -47,7 +59,7 @@ def compare_solutions(
         )
 
     def prompt_engineering_solution():
-        generated_prompt = agent.ask(
+        generated_prompt_result = agent.run(
             prompt,
             "Ты — промпт-инженер. Преобразуй задачу пользователя в точный, "
             "самодостаточный промпт для другой языковой модели. Не решай исходную "
@@ -60,11 +72,29 @@ def compare_solutions(
             "дополнительного контекста.",
             temperature,
         )
-        answer = agent.ask(generated_prompt, temperature=temperature)
-        return generated_prompt, answer
+        generated_prompt = generated_prompt_result["text"]
+        answer_result = agent.run(generated_prompt, temperature=temperature)
+        combined = {
+            "elapsed_seconds": round(
+                generated_prompt_result["elapsed_seconds"]
+                + answer_result["elapsed_seconds"],
+                3,
+            ),
+            "usage": {
+                key: generated_prompt_result["usage"][key]
+                + answer_result["usage"][key]
+                for key in ("input_tokens", "output_tokens", "total_tokens")
+            },
+            "cost_usd": round(
+                generated_prompt_result["cost_usd"] + answer_result["cost_usd"],
+                8,
+            ),
+            "pricing_note": answer_result["pricing_note"],
+        }
+        return generated_prompt, answer_result, combined
 
     def expert_group_solution():
-        return agent.ask(
+        return agent.run(
             prompt,
             "Создай группу из трёх экспертов: аналитика, инженера и критика. "
             "Пусть каждый независимо предложит своё решение задачи и объяснит ход мысли. "
@@ -77,32 +107,39 @@ def compare_solutions(
         steps_future = executor.submit(step_by_step_solution)
         prompt_future = executor.submit(prompt_engineering_solution)
         experts_future = executor.submit(expert_group_solution)
-        generated_prompt, prompt_answer = prompt_future.result()
+        generated_prompt, prompt_answer, prompt_metrics = prompt_future.result()
+        direct_result = direct_future.result()
+        steps_result = steps_future.result()
+        experts_result = experts_future.result()
         solutions = [
             {
                 "id": "direct",
                 "title": "1. Прямой ответ",
                 "description": "Только исходная задача, без дополнительных инструкций.",
-                "answer": direct_future.result(),
+                "answer": direct_result["text"],
+                "metrics": result_metrics(direct_result),
             },
             {
                 "id": "steps",
                 "title": "2. Проверяемое пошаговое решение",
                 "description": "Факты, ограничения, обоснованные шаги, проверка и итог.",
-                "answer": steps_future.result(),
+                "answer": steps_result["text"],
+                "metrics": result_metrics(steps_result),
             },
             {
                 "id": "prompt",
                 "title": "3. Решение через улучшенный промпт",
                 "description": "Сначала создаётся самодостаточный промпт, затем он решает задачу.",
                 "generated_prompt": generated_prompt,
-                "answer": prompt_answer,
+                "answer": prompt_answer["text"],
+                "metrics": result_metrics(prompt_metrics),
             },
             {
                 "id": "experts",
                 "title": "4. Группа экспертов",
                 "description": "Независимые позиции аналитика, инженера и критика.",
-                "answer": experts_future.result(),
+                "answer": experts_result["text"],
+                "metrics": result_metrics(experts_result),
             },
         ]
 
@@ -112,14 +149,18 @@ def compare_solutions(
     comparison_text = "\n\n".join(
         f"{solution['title']}\n{solution['answer']}" for solution in solutions
     )
-    analysis = agent.ask(
+    analysis_result = agent.run(
         f"Исходная задача:\n{prompt}\n\nПолученные решения:\n{comparison_text}",
         "Проанализируй четыре решения на русском языке. Сравни их корректность, "
         "полноту, понятность и надёжность. Укажи совпадения и противоречия, выбери "
         f"лучший подход и сформулируй итоговый вывод.{limit_instruction}",
         temperature,
     )
-    return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
+    return {
+        "solutions": solutions,
+        "analysis": truncate_words(analysis_result["text"], max_words),
+        "analysis_metrics": result_metrics(analysis_result),
+    }
 
 
 def compare_temperatures(prompt, max_words, model_key="deepseek-v4-pro"):
@@ -135,7 +176,7 @@ def compare_temperatures(prompt, max_words, model_key="deepseek-v4-pro"):
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
-            value: executor.submit(agent.ask, prompt, None, value)
+            value: executor.submit(agent.run, prompt, None, value)
             for _, _, value, _ in settings
         }
         solutions = [
@@ -144,7 +185,8 @@ def compare_temperatures(prompt, max_words, model_key="deepseek-v4-pro"):
                 "title": title,
                 "description": description,
                 "temperature": value,
-                "answer": truncate_words(futures[value].result(), max_words),
+                "answer": truncate_words(futures[value].result()["text"], max_words),
+                "metrics": result_metrics(futures[value].result()),
             }
             for solution_id, title, value, description in settings
         ]
@@ -152,7 +194,7 @@ def compare_temperatures(prompt, max_words, model_key="deepseek-v4-pro"):
     comparison_text = "\n\n".join(
         f"{solution['title']}\n{solution['answer']}" for solution in solutions
     )
-    analysis = agent.ask(
+    analysis_result = agent.run(
         f"Исходная задача:\n{prompt}\n\nОтветы:\n{comparison_text}",
         "Сравни три ответа, созданные с разными значениями temperature. "
         "Проанализируй каждый по критериям: 1) точность, 2) креативность, "
@@ -162,7 +204,11 @@ def compare_temperatures(prompt, max_words, model_key="deepseek-v4-pro"):
         f"языке и структурированно.{limit_instruction}",
         0.0,
     )
-    return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
+    return {
+        "solutions": solutions,
+        "analysis": truncate_words(analysis_result["text"], max_words),
+        "analysis_metrics": result_metrics(analysis_result),
+    }
 
 
 def compare_models(prompt, max_words, temperature=None):
@@ -185,21 +231,13 @@ def compare_models(prompt, max_words, temperature=None):
     solutions = []
     for model_key, model_config in MODEL_OPTIONS.items():
         result = results[model_key]
-        usage = result["usage"]
         solutions.append(
             {
                 "id": model_key,
                 "title": model_config["label"],
                 "description": "Один и тот же запрос без специальных подсказок для модели.",
                 "answer": result["text"],
-                "metrics": {
-                    "elapsed_seconds": result["elapsed_seconds"],
-                    "input_tokens": usage["input_tokens"],
-                    "output_tokens": usage["output_tokens"],
-                    "total_tokens": usage["total_tokens"],
-                    "cost_usd": result["cost_usd"],
-                    "pricing_note": result["pricing_note"],
-                },
+                "metrics": result_metrics(result),
             }
         )
 
@@ -211,7 +249,7 @@ def compare_models(prompt, max_words, temperature=None):
         f"Ответ:\n{solution['answer']}"
         for solution in solutions
     )
-    analysis = SimpleAgent("deepseek-v4-pro").ask(
+    analysis_result = SimpleAgent("deepseek-v4-pro").run(
         f"Исходный запрос:\n{prompt}\n\nРезультаты моделей:\n{comparison_text}",
         "Сравни ответы трёх моделей на русском языке. Оцени: 1) качество и "
         "корректность ответа, 2) скорость по измеренному времени, 3) ресурсоёмкость "
@@ -222,7 +260,11 @@ def compare_models(prompt, max_words, temperature=None):
         + limit_instruction,
         0.0,
     )
-    return {"solutions": solutions, "analysis": truncate_words(analysis, max_words)}
+    return {
+        "solutions": solutions,
+        "analysis": truncate_words(analysis_result["text"], max_words),
+        "analysis_metrics": result_metrics(analysis_result),
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -411,7 +453,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "Не используй лишние вступления."
             )
         try:
-            answer = selected_agent.ask(
+            agent_result = selected_agent.run(
                 messages if dialogue_mode else prompt,
                 " ".join(instructions),
                 temperature,
@@ -427,6 +469,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(502, {"error": "Не удалось связаться с API модели."})
             return
 
+        answer = agent_result["text"]
         complete = dialogue_mode and FINAL_MARKER in answer
         if complete:
             answer = answer.replace(FINAL_MARKER, "", 1).strip()
@@ -434,7 +477,14 @@ class Handler(SimpleHTTPRequestHandler):
             answer = answer.split(finish_value, 1)[0].rstrip()
             complete = True
         answer = truncate_words(answer, max_words)
-        self.send_json(200, {"answer": answer, "complete": complete})
+        self.send_json(
+            200,
+            {
+                "answer": answer,
+                "complete": complete,
+                "metrics": result_metrics(agent_result),
+            },
+        )
 
     def send_json(self, status, payload):
         data = json.dumps(payload, ensure_ascii=False).encode()
