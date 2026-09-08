@@ -141,6 +141,19 @@
       transition: .16s ease;
     }
     form:focus-within { border-color: #a8a8ed; box-shadow: 0 24px 72px #4646b521, 0 0 0 3px #5b5bd614; }
+    .chat-panel {
+      overflow: hidden; border: 1px solid var(--line); border-radius: 24px;
+      background: #ffffffe8; box-shadow: 0 22px 65px #252f481a, 0 2px 8px #252f480d;
+      transition: .16s ease;
+    }
+    .chat-panel:focus-within {
+      border-color: #a8a8ed; box-shadow: 0 24px 72px #4646b521, 0 0 0 3px #5b5bd614;
+    }
+    .chat-panel form, .chat-panel form:focus-within {
+      border: 0; border-radius: 0; background: transparent; box-shadow: none;
+    }
+    .chat-panel:has(#result.visible) form { border-top: 1px solid var(--line); }
+    .chat-panel:has(#result.visible) textarea { min-height: 96px; }
     textarea {
       display: block; width: 100%; min-height: 138px; padding: 20px 20px 12px;
       resize: vertical; border: 0; outline: 0; background: transparent; color: var(--ink);
@@ -171,6 +184,10 @@
     #result.visible { display: block; }
     #result.loading { color: var(--muted); }
     #result.error { border-color: #fecaca; background: #fff1f2e6; color: #b91c1c; }
+    .chat-panel #result {
+      margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+    }
+    .chat-panel #result.error { background: #fff1f2e6; }
     .result-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .dialogue-status { color: var(--muted); font-size: 12px; font-weight: 700; }
     .dialogue-status.complete { color: #16805b; }
@@ -178,7 +195,7 @@
       border: 1px solid var(--line); border-radius: 9px; padding: 6px 9px; cursor: pointer;
       background: white; color: var(--muted); font: inherit; font-size: 12px;
     }
-    .messages { display: grid; gap: 10px; }
+    .messages { display: grid; gap: 10px; max-height: 52vh; overflow-y: auto; padding-right: 4px; }
     .message { max-width: 88%; padding: 11px 13px; border-radius: 15px; white-space: pre-wrap; }
     .message.user { justify-self: end; background: var(--accent); color: white; border-bottom-right-radius: 5px; }
     .message.assistant { justify-self: start; background: #f0f2f7; color: var(--ink); border-bottom-left-radius: 5px; }
@@ -394,31 +411,33 @@
             <p>Обычный чат, эксперимент с промптами, temperature или сравнение моделей — всё в одном рабочем окне.</p>
           </section>
 
-          <form id="chat-form">
-            <label for="prompt" hidden>Ваш вопрос</label>
-            <textarea id="prompt" maxlength="12000" placeholder="Напишите запрос для Nastia Chat…" required></textarea>
-            <div class="actions">
-              <span class="hint">
-                Enter — отправить · Shift + Enter — новая строка
-                <span class="prompt-count" id="prompt-count" aria-live="polite">0 / 12 000 символов</span>
-                <span class="token-estimate" id="token-estimate">≈ 0 токенов</span>
-              </span>
-              <button class="send" type="submit" aria-label="Отправить вопрос">↑</button>
-            </div>
-          </form>
+          <div class="chat-panel">
+            <section id="result" aria-live="polite">
+              <div class="result-head">
+                <span class="dialogue-status" id="dialogue-status"></span>
+                <button class="new-chat" id="new-chat" type="button">Удалить диалог</button>
+              </div>
+              <div class="messages" id="messages"></div>
+            </section>
+            <form id="chat-form">
+              <label for="prompt" hidden>Ваш вопрос</label>
+              <textarea id="prompt" maxlength="12000" placeholder="Напишите запрос для Nastia Chat…" required></textarea>
+              <div class="actions">
+                <span class="hint">
+                  Enter — отправить · Shift + Enter — новая строка
+                  <span class="prompt-count" id="prompt-count" aria-live="polite">0 / 12 000 символов</span>
+                  <span class="token-estimate" id="token-estimate">≈ 0 токенов</span>
+                </span>
+                <button class="send" type="submit" aria-label="Отправить вопрос">↑</button>
+              </div>
+            </form>
+          </div>
 
           <div class="examples" id="examples">
             <button type="button">Объясни простыми словами, что такое API</button>
             <button type="button">Реши логическую задачу пошагово</button>
             <button type="button">Придумай 5 идей для поста</button>
           </div>
-          <section id="result" aria-live="polite">
-            <div class="result-head">
-              <span class="dialogue-status" id="dialogue-status"></span>
-              <button class="new-chat" id="new-chat" type="button">Удалить диалог</button>
-            </div>
-            <div class="messages" id="messages"></div>
-          </section>
         </section>
       </div>
     </main>
@@ -482,6 +501,7 @@
       message.className = `message ${role}`;
       message.textContent = text;
       messagesView.append(message);
+      messagesView.scrollTop = messagesView.scrollHeight;
     }
 
     async function loadConversations() {

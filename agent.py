@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import ssl
 import threading
 import time
@@ -11,7 +12,8 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).parent
 SYSTEM_CA_FILE = Path("/etc/ssl/cert.pem")
-HISTORY_FILE = ROOT / "conversation_history.json"
+HISTORY_DATABASE = ROOT / "conversation_history.db"
+LEGACY_HISTORY_FILE = ROOT / "conversation_history.json"
 MODEL_OPTIONS = {
     "deepseek-v4-pro": {
         "label": "DeepSeek V4 Pro",
@@ -65,84 +67,188 @@ load_local_env()
 
 
 class ConversationStore:
-    """Thread-safe JSON storage for conversations that survive restarts."""
+    """Thread-safe SQLite storage for complete persistent conversations."""
 
     _lock = threading.RLock()
 
-    def __init__(self, path=HISTORY_FILE, max_messages=20):
+    def __init__(self, path=HISTORY_DATABASE, legacy_json_path=None):
         self.path = Path(path)
-        self.max_messages = max_messages
+        self.legacy_json_path = (
+            Path(legacy_json_path)
+            if legacy_json_path
+            else LEGACY_HISTORY_FILE if self.path == HISTORY_DATABASE else None
+        )
+        self._initialize()
+        self._migrate_legacy_json()
 
     def get(self, session_id):
         with self._lock:
-            entry = self._read_all().get(session_id, [])
-            messages = entry.get("messages", []) if isinstance(entry, dict) else entry
-            return [dict(message) for message in messages]
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT role, content FROM messages "
+                    "WHERE session_id = ? ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+        return [{"role": row[0], "content": row[1]} for row in rows]
 
     def list(self):
         with self._lock:
-            items = []
-            for session_id, entry in self._read_all().items():
-                messages = entry.get("messages", []) if isinstance(entry, dict) else entry
-                if not messages:
-                    continue
-                first_user_message = next(
-                    (
-                        message.get("content", "")
-                        for message in messages
-                        if message.get("role") == "user"
-                    ),
-                    "Новый диалог",
-                )
-                title = " ".join(first_user_message.split())[:48]
-                items.append(
-                    {
-                        "id": session_id,
-                        "title": title + ("…" if len(first_user_message) > 48 else ""),
-                        "message_count": len(messages),
-                        "updated_at": entry.get("updated_at", "")
-                        if isinstance(entry, dict)
-                        else "",
-                    }
-                )
-            return sorted(items, key=lambda item: item["updated_at"], reverse=True)
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT conversations.session_id, conversations.title, "
+                    "COUNT(messages.id), conversations.updated_at "
+                    "FROM conversations "
+                    "LEFT JOIN messages ON messages.session_id = conversations.session_id "
+                    "GROUP BY conversations.session_id "
+                    "ORDER BY conversations.updated_at DESC"
+                ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "title": row[1],
+                "message_count": row[2],
+                "updated_at": row[3],
+            }
+            for row in rows
+        ]
 
     def save(self, session_id, messages):
         clean_messages = [
             {"role": message["role"], "content": message["content"]}
-            for message in messages[-self.max_messages :]
+            for message in messages
         ]
+        if not clean_messages:
+            self.clear(session_id)
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        title = self._title_from_messages(clean_messages)
         with self._lock:
-            conversations = self._read_all()
-            conversations[session_id] = {
-                "messages": clean_messages,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self._write_all(conversations)
+            with self._connect() as connection:
+                connection.execute(
+                    "INSERT INTO conversations(session_id, title, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET title = excluded.title, "
+                    "updated_at = excluded.updated_at",
+                    (session_id, title, now, now),
+                )
+                connection.execute(
+                    "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                )
+                connection.executemany(
+                    "INSERT INTO messages(session_id, role, content, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [
+                        (session_id, message["role"], message["content"], now)
+                        for message in clean_messages
+                    ],
+                )
+
+    def append_exchange(self, session_id, user_message, assistant_message):
+        now = datetime.now(timezone.utc).isoformat()
+        title = self._format_title(user_message)
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute(
+                    "INSERT INTO conversations(session_id, title, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET updated_at = excluded.updated_at",
+                    (session_id, title, now, now),
+                )
+                connection.executemany(
+                    "INSERT INTO messages(session_id, role, content, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [
+                        (session_id, "user", user_message, now),
+                        (session_id, "assistant", assistant_message, now),
+                    ],
+                )
 
     def clear(self, session_id):
         with self._lock:
-            conversations = self._read_all()
-            if session_id in conversations:
-                del conversations[session_id]
-                self._write_all(conversations)
+            with self._connect() as connection:
+                connection.execute(
+                    "DELETE FROM conversations WHERE session_id = ?", (session_id,)
+                )
 
-    def _read_all(self):
-        if not self.path.exists():
-            return {}
+    def replace_last_assistant(self, session_id, answer):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute(
+                    "UPDATE messages SET content = ?, created_at = ? "
+                    "WHERE id = (SELECT id FROM messages WHERE session_id = ? "
+                    "AND role = 'assistant' ORDER BY id DESC LIMIT 1)",
+                    (answer, now, session_id),
+                )
+                connection.execute(
+                    "UPDATE conversations SET updated_at = ? WHERE session_id = ?",
+                    (now, session_id),
+                )
+
+    def _connect(self):
+        connection = sqlite3.connect(self.path, timeout=10)
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    def _initialize(self):
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS conversations ("
+                    "session_id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+                    "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS messages ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "session_id TEXT NOT NULL REFERENCES conversations(session_id) "
+                    "ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), "
+                    "content TEXT NOT NULL, created_at TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_messages_session_id_id "
+                    "ON messages(session_id, id)"
+                )
+                connection.execute("PRAGMA optimize")
+
+    def _migrate_legacy_json(self):
+        if not self.legacy_json_path or not self.legacy_json_path.exists():
+            return
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            conversations = json.loads(
+                self.legacy_json_path.read_text(encoding="utf-8")
+            )
         except (OSError, json.JSONDecodeError):
-            return {}
-        return data if isinstance(data, dict) else {}
+            return
+        if not isinstance(conversations, dict):
+            return
+        for session_id, entry in conversations.items():
+            messages = entry.get("messages", []) if isinstance(entry, dict) else entry
+            if not isinstance(messages, list) or not messages:
+                continue
+            with self._connect() as connection:
+                exists = connection.execute(
+                    "SELECT 1 FROM conversations WHERE session_id = ?", (session_id,)
+                ).fetchone()
+            if not exists:
+                self.save(session_id, messages)
 
-    def _write_all(self, conversations):
-        temporary_path = self.path.with_suffix(".tmp")
-        temporary_path.write_text(
-            json.dumps(conversations, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    @classmethod
+    def _title_from_messages(cls, messages):
+        first_user_message = next(
+            (
+                message["content"]
+                for message in messages
+                if message["role"] == "user"
+            ),
+            "Новый диалог",
         )
-        temporary_path.replace(self.path)
+        return cls._format_title(first_user_message)
+
+    @staticmethod
+    def _format_title(message):
+        compact = " ".join(message.split())
+        return compact[:48] + ("…" if len(compact) > 48 else "")
 
 
 class SimpleAgent:
@@ -153,7 +259,7 @@ class SimpleAgent:
         model_key="deepseek-v4-pro",
         api_key=None,
         session_id=None,
-        history_file=HISTORY_FILE,
+        history_database=HISTORY_DATABASE,
     ):
         if model_key not in MODEL_OPTIONS:
             raise ValueError("Неизвестная модель агента.")
@@ -161,7 +267,7 @@ class SimpleAgent:
         self.config = MODEL_OPTIONS[model_key]
         self.api_key = api_key or os.environ.get(self.config["api_key_env"])
         self.session_id = session_id
-        self.store = ConversationStore(history_file) if session_id else None
+        self.store = ConversationStore(history_database) if session_id else None
         if not self.api_key:
             raise AgentConfigurationError(
                 f"На сервере не настроен {self.config['api_key_env']} "
@@ -187,8 +293,7 @@ class SimpleAgent:
         messages = self.history
         messages.append({"role": "user", "content": user_request})
         result = self.run(messages, instructions, temperature)
-        messages.append({"role": "assistant", "content": result["text"]})
-        self.store.save(self.session_id, messages)
+        self.store.append_exchange(self.session_id, user_request, result["text"])
         return result
 
     def clear_history(self):
@@ -199,10 +304,7 @@ class SimpleAgent:
         """Keep stored history identical to the answer shown in the interface."""
         if not self.store:
             return
-        messages = self.history
-        if messages and messages[-1].get("role") == "assistant":
-            messages[-1]["content"] = answer
-            self.store.save(self.session_id, messages)
+        self.store.replace_last_assistant(self.session_id, answer)
 
     def run(self, user_request, instructions=None, temperature=None):
         """Send a request to the LLM and return text plus execution metrics."""

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent import SimpleAgent
+from agent import ConversationStore, SimpleAgent
 
 
 class FakeResponse:
@@ -60,18 +60,18 @@ class SimpleAgentTest(unittest.TestCase):
     )
     def test_history_survives_agent_restart(self, mocked_urlopen):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            history_file = Path(temporary_directory) / "history.json"
+            history_database = Path(temporary_directory) / "history.db"
             first_agent = SimpleAgent(
                 "deepseek-v4-pro",
                 session_id="test-session",
-                history_file=history_file,
+                history_database=history_database,
             )
             first_agent.chat("Меня зовут Настя")
 
             restarted_agent = SimpleAgent(
                 "deepseek-v4-pro",
                 session_id="test-session",
-                history_file=history_file,
+                history_database=history_database,
             )
             restarted_agent.chat("Как меня зовут?")
 
@@ -84,6 +84,46 @@ class SimpleAgentTest(unittest.TestCase):
             self.assertEqual(conversations[0]["id"], "test-session")
             self.assertEqual(conversations[0]["message_count"], 4)
             self.assertEqual(conversations[0]["title"], "Меня зовут Настя")
+
+    def test_store_keeps_complete_history_without_limit(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = ConversationStore(Path(temporary_directory) / "history.db")
+            messages = [
+                {
+                    "role": "user" if index % 2 == 0 else "assistant",
+                    "content": f"Сообщение {index}",
+                }
+                for index in range(60)
+            ]
+
+            store.save("long-session", messages)
+
+            self.assertEqual(store.get("long-session"), messages)
+            self.assertEqual(store.list()[0]["message_count"], 60)
+
+    def test_legacy_json_history_is_migrated_to_sqlite(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            legacy_file = directory / "history.json"
+            database = directory / "history.db"
+            legacy_file.write_text(
+                json.dumps(
+                    {
+                        "legacy-session": {
+                            "messages": [
+                                {"role": "user", "content": "Старый вопрос"},
+                                {"role": "assistant", "content": "Старый ответ"},
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            store = ConversationStore(database, legacy_json_path=legacy_file)
+
+            self.assertEqual(len(store.get("legacy-session")), 2)
 
 
 if __name__ == "__main__":
