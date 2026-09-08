@@ -80,6 +80,10 @@ class SimpleAgentTest(unittest.TestCase):
             self.assertEqual(second_input[0]["content"], "Меня зовут Настя")
             self.assertEqual(second_input[1]["role"], "assistant")
             self.assertEqual(second_input[2]["content"], "Как меня зовут?")
+            conversations = restarted_agent.store.list()
+            self.assertEqual(conversations[0]["id"], "test-session")
+            self.assertEqual(conversations[0]["message_count"], 4)
+            self.assertEqual(conversations[0]["title"], "Меня зовут Настя")
 
 
 if __name__ == "__main__":

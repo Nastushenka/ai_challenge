@@ -275,6 +275,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/conversations":
+            self.send_json(200, {"conversations": ConversationStore().list()})
+            return
         if parsed.path != "/api/history":
             super().do_GET()
             return

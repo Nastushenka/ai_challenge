@@ -75,8 +75,37 @@ class ConversationStore:
 
     def get(self, session_id):
         with self._lock:
-            messages = self._read_all().get(session_id, [])
+            entry = self._read_all().get(session_id, [])
+            messages = entry.get("messages", []) if isinstance(entry, dict) else entry
             return [dict(message) for message in messages]
+
+    def list(self):
+        with self._lock:
+            items = []
+            for session_id, entry in self._read_all().items():
+                messages = entry.get("messages", []) if isinstance(entry, dict) else entry
+                if not messages:
+                    continue
+                first_user_message = next(
+                    (
+                        message.get("content", "")
+                        for message in messages
+                        if message.get("role") == "user"
+                    ),
+                    "Новый диалог",
+                )
+                title = " ".join(first_user_message.split())[:48]
+                items.append(
+                    {
+                        "id": session_id,
+                        "title": title + ("…" if len(first_user_message) > 48 else ""),
+                        "message_count": len(messages),
+                        "updated_at": entry.get("updated_at", "")
+                        if isinstance(entry, dict)
+                        else "",
+                    }
+                )
+            return sorted(items, key=lambda item: item["updated_at"], reverse=True)
 
     def save(self, session_id, messages):
         clean_messages = [
@@ -85,7 +114,10 @@ class ConversationStore:
         ]
         with self._lock:
             conversations = self._read_all()
-            conversations[session_id] = clean_messages
+            conversations[session_id] = {
+                "messages": clean_messages,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
             self._write_all(conversations)
 
     def clear(self, session_id):

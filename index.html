@@ -206,6 +206,25 @@
     .panel-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .panel-title h2 { margin: 0; font-size: 16px; }
     .panel-title span { color: var(--muted); font-size: 12px; }
+    .conversation-panel { margin-bottom: 4px; padding-bottom: 14px; }
+    .conversation-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+    .conversation-actions strong { margin: 0; font-size: 14px; }
+    .new-conversation {
+      border: 0; border-radius: 9px; padding: 7px 10px; cursor: pointer;
+      background: var(--accent); color: white; font: inherit; font-size: 12px; font-weight: 700;
+    }
+    .conversation-list { display: grid; gap: 5px; max-height: 210px; overflow-y: auto; }
+    .conversation-item {
+      width: 100%; border: 1px solid transparent; border-radius: 10px; padding: 9px 10px;
+      cursor: pointer; background: transparent; color: var(--ink); text-align: left; font: inherit;
+    }
+    .conversation-item:hover { background: #f3f4fa; }
+    .conversation-item.active { border-color: #c7c7f3; background: var(--accent-soft); }
+    .conversation-item strong {
+      display: block; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;
+    }
+    .conversation-item small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .conversation-empty { margin: 0; padding: 8px 2px; color: var(--muted); font-size: 12px; }
     .settings-group { border-top: 1px solid var(--line); padding: 0; }
     .settings-group > summary {
       padding: 13px 0; cursor: pointer; color: var(--ink); font-size: 14px; font-weight: 750;
@@ -265,6 +284,16 @@
             <h2>Настройки</h2>
             <span>задания 2–5</span>
           </div>
+
+          <section class="conversation-panel" aria-labelledby="conversation-title">
+            <div class="conversation-actions">
+              <strong id="conversation-title">История диалогов</strong>
+              <button class="new-conversation" id="new-conversation" type="button">+ Новый</button>
+            </div>
+            <div class="conversation-list" id="conversation-list">
+              <p class="conversation-empty">Сохранённых диалогов пока нет.</p>
+            </div>
+          </section>
 
           <details class="settings-group" open>
             <summary>Режим запуска</summary>
@@ -386,7 +415,7 @@
           <section id="result" aria-live="polite">
             <div class="result-head">
               <span class="dialogue-status" id="dialogue-status"></span>
-              <button class="new-chat" id="new-chat" type="button">Очистить</button>
+              <button class="new-chat" id="new-chat" type="button">Удалить диалог</button>
             </div>
             <div class="messages" id="messages"></div>
           </section>
@@ -424,6 +453,8 @@
     const dialogueStatus = document.querySelector('#dialogue-status');
     const messagesView = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
+    const newConversation = document.querySelector('#new-conversation');
+    const conversationList = document.querySelector('#conversation-list');
     const sessionStorageKey = 'nastia-chat-session-id';
     const createSessionId = () => {
       if (window.crypto?.randomUUID) return window.crypto.randomUUID();
@@ -453,6 +484,40 @@
       messagesView.append(message);
     }
 
+    async function loadConversations() {
+      try {
+        const response = await fetch('/api/conversations');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        conversationList.replaceChildren();
+        if (!data.conversations?.length) {
+          const empty = document.createElement('p');
+          empty.className = 'conversation-empty';
+          empty.textContent = 'Сохранённых диалогов пока нет.';
+          conversationList.append(empty);
+          return;
+        }
+        for (const conversation of data.conversations) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = `conversation-item${conversation.id === sessionId ? ' active' : ''}`;
+          button.dataset.sessionId = conversation.id;
+          const title = document.createElement('strong');
+          title.textContent = conversation.title || 'Новый диалог';
+          const count = document.createElement('small');
+          count.textContent = `${conversation.message_count} сообщений`;
+          button.append(title, count);
+          conversationList.append(button);
+        }
+      } catch (_) {
+        conversationList.replaceChildren();
+        const error = document.createElement('p');
+        error.className = 'conversation-empty';
+        error.textContent = 'Не удалось загрузить историю.';
+        conversationList.append(error);
+      }
+    }
+
     async function restoreHistory() {
       try {
         const response = await fetch(`/api/history?session_id=${encodeURIComponent(sessionId)}`);
@@ -468,6 +533,7 @@
         } else {
           resetDialogue();
         }
+        await loadConversations();
       } catch (_) {
         resetDialogue();
       }
@@ -679,13 +745,35 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: sessionId }),
         });
+        sessionId = createSessionId();
+        localStorage.setItem(sessionStorageKey, sessionId);
         resetDialogue();
         prompt.value = '';
         updatePromptCount();
         prompt.focus();
+        await loadConversations();
       } finally {
         newChat.disabled = false;
       }
+    });
+
+    newConversation.addEventListener('click', async () => {
+      sessionId = createSessionId();
+      localStorage.setItem(sessionStorageKey, sessionId);
+      resetDialogue();
+      prompt.value = '';
+      updatePromptCount();
+      await loadConversations();
+      prompt.focus();
+    });
+
+    conversationList.addEventListener('click', async (event) => {
+      const button = event.target.closest('.conversation-item');
+      if (!button) return;
+      sessionId = button.dataset.sessionId;
+      localStorage.setItem(sessionStorageKey, sessionId);
+      await restoreHistory();
+      prompt.focus();
     });
 
     examples.addEventListener('click', (event) => {
@@ -790,6 +878,7 @@
         const metrics = createMetrics(data.metrics);
         if (metrics) messagesView.append(metrics);
         messages.push({ role: 'assistant', content: answer });
+        await loadConversations();
         dialogueStatus.className = data.complete ? 'dialogue-status complete' : 'dialogue-status';
         if (dialogueMode) {
           dialogueStatus.textContent = data.complete ? '✓ Данных достаточно — итог готов' : 'Нужно уточнение';
