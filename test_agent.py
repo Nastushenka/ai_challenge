@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent import ConversationStore, SimpleAgent
+from agent import ContextWindowExceeded, ConversationStore, SimpleAgent
+from token_scenarios import analyze_prepared_dialogues
 
 
 class FakeResponse:
@@ -47,6 +48,10 @@ class SimpleAgentTest(unittest.TestCase):
 
         self.assertEqual(result["text"], "Готово")
         self.assertEqual(result["usage"]["total_tokens"], 6)
+        self.assertGreater(result["token_report"]["current_request_tokens"], 0)
+        self.assertEqual(result["token_report"]["history_tokens"], 0)
+        self.assertEqual(result["token_report"]["api_input_tokens"], 4)
+        self.assertEqual(result["token_report"]["response_tokens"], 2)
         request = mocked_urlopen.call_args.args[0]
         body = json.loads(request.data)
         self.assertEqual(body["input"], "Проверка")
@@ -84,6 +89,10 @@ class SimpleAgentTest(unittest.TestCase):
             self.assertEqual(conversations[0]["id"], "test-session")
             self.assertEqual(conversations[0]["message_count"], 4)
             self.assertEqual(conversations[0]["title"], "Меня зовут Настя")
+            totals = restarted_agent.store.usage_summary("test-session")
+            self.assertEqual(totals["turn_count"], 2)
+            self.assertEqual(totals["cumulative_api_tokens"], 12)
+            self.assertGreater(totals["turns"][1]["history_tokens"], 0)
 
     def test_store_keeps_complete_history_without_limit(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -124,6 +133,32 @@ class SimpleAgentTest(unittest.TestCase):
             store = ConversationStore(database, legacy_json_path=legacy_file)
 
             self.assertEqual(len(store.get("legacy-session")), 2)
+
+    @patch.dict(
+        os.environ,
+        {"LLM_API_KEY": "test-key", "DEEPSEEK_V4_PRO_CONTEXT_WINDOW": "10"},
+    )
+    @patch("agent.urlopen")
+    def test_context_overflow_is_stopped_before_api_call(self, mocked_urlopen):
+        agent = SimpleAgent("deepseek-v4-pro")
+
+        with self.assertRaises(ContextWindowExceeded) as raised:
+            agent.run("Очень длинный запрос, который точно не помещается в десять токенов")
+
+        self.assertEqual(raised.exception.report["status"], "overflow")
+        mocked_urlopen.assert_not_called()
+
+    def test_prepared_dialogues_cover_short_long_and_overflow(self):
+        scenarios = analyze_prepared_dialogues("qwen3-8b")
+
+        self.assertEqual([item["id"] for item in scenarios], ["short", "long", "overflow"])
+        self.assertFalse(scenarios[0]["overflow"])
+        self.assertFalse(scenarios[1]["overflow"])
+        self.assertTrue(scenarios[2]["overflow"])
+        long_inputs = [turn["input_tokens"] for turn in scenarios[1]["timeline"]]
+        long_costs = [turn["cumulative_cost_usd"] for turn in scenarios[1]["timeline"]]
+        self.assertEqual(long_inputs, sorted(long_inputs))
+        self.assertEqual(long_costs, sorted(long_costs))
 
 
 if __name__ == "__main__":

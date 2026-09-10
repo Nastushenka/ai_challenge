@@ -6,7 +6,15 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
-from agent import AgentConfigurationError, ConversationStore, MODEL_OPTIONS, SimpleAgent
+from agent import (
+    AgentConfigurationError,
+    ContextWindowExceeded,
+    ConversationStore,
+    MODEL_OPTIONS,
+    SimpleAgent,
+    estimate_messages_tokens,
+)
+from token_scenarios import analyze_prepared_dialogues
 
 
 ROOT = Path(__file__).parent
@@ -26,7 +34,7 @@ def truncate_words(text, max_words):
 
 def result_metrics(result):
     usage = result["usage"]
-    return {
+    metrics = {
         "elapsed_seconds": result["elapsed_seconds"],
         "input_tokens": usage["input_tokens"],
         "output_tokens": usage["output_tokens"],
@@ -34,6 +42,11 @@ def result_metrics(result):
         "cost_usd": result["cost_usd"],
         "pricing_note": result["pricing_note"],
     }
+    if result.get("token_report"):
+        metrics["token_report"] = result["token_report"]
+    if result.get("conversation_totals"):
+        metrics["conversation_totals"] = result["conversation_totals"]
+    return metrics
 
 
 def compare_solutions(
@@ -278,6 +291,20 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/conversations":
             self.send_json(200, {"conversations": ConversationStore().list()})
             return
+        if parsed.path == "/api/token-tests":
+            model_key = parse_qs(parsed.query).get("model", ["deepseek-v4-pro"])[0]
+            if model_key not in MODEL_OPTIONS:
+                self.send_json(400, {"error": "Выберите доступную модель."})
+                return
+            self.send_json(
+                200,
+                {
+                    "model": model_key,
+                    "model_label": MODEL_OPTIONS[model_key]["label"],
+                    "scenarios": analyze_prepared_dialogues(model_key),
+                },
+            )
+            return
         if parsed.path != "/api/history":
             super().do_GET()
             return
@@ -285,7 +312,11 @@ class Handler(SimpleHTTPRequestHandler):
         if not SESSION_ID_PATTERN.fullmatch(session_id):
             self.send_json(400, {"error": "Некорректный идентификатор диалога."})
             return
-        self.send_json(200, {"history": ConversationStore().get(session_id)})
+        store = ConversationStore()
+        history = store.get(session_id)
+        summary = store.usage_summary(session_id)
+        summary["dialogue_tokens"] = estimate_messages_tokens(history)
+        self.send_json(200, {"history": history, "token_summary": summary})
 
     def do_POST(self):
         if self.path == "/api/reset":
@@ -375,6 +406,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             try:
                 comparison = compare_models(prompt, max_words, temperature)
+            except ContextWindowExceeded as error:
+                self.send_json(413, {"error": str(error), "token_report": error.report})
+                return
             except HTTPError as error:
                 try:
                     message = json.load(error).get("error", {}).get("message")
@@ -390,6 +424,9 @@ class Handler(SimpleHTTPRequestHandler):
         if compare_temperature_mode:
             try:
                 comparison = compare_temperatures(prompt, max_words, model_key)
+            except ContextWindowExceeded as error:
+                self.send_json(413, {"error": str(error), "token_report": error.report})
+                return
             except HTTPError as error:
                 try:
                     message = json.load(error).get("error", {}).get("message")
@@ -407,6 +444,9 @@ class Handler(SimpleHTTPRequestHandler):
                 comparison = compare_solutions(
                     prompt, max_words, temperature, model_key
                 )
+            except ContextWindowExceeded as error:
+                self.send_json(413, {"error": str(error), "token_report": error.report})
+                return
             except HTTPError as error:
                 try:
                     message = json.load(error).get("error", {}).get("message")
@@ -471,6 +511,9 @@ class Handler(SimpleHTTPRequestHandler):
                 " ".join(instructions),
                 temperature,
             )
+        except ContextWindowExceeded as error:
+            self.send_json(413, {"error": str(error), "token_report": error.report})
+            return
         except HTTPError as error:
             try:
                 message = json.load(error).get("error", {}).get("message")

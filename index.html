@@ -262,6 +262,37 @@
     }
     .message + .response-metrics { justify-self: start; }
     .analysis-card .response-metrics { margin-top: 12px; }
+    .token-dashboard {
+      display: none; margin: 0 0 14px; padding: 14px; border: 1px solid #d8daf4;
+      border-radius: 15px; background: linear-gradient(135deg, #f7f7ff, #f3f8ff);
+    }
+    .token-dashboard.visible { display: block; }
+    .token-dashboard.warning { border-color: #f0c36b; background: #fff9eb; }
+    .token-dashboard.overflow { border-color: #f4a3a3; background: #fff1f2; }
+    .token-dashboard-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .token-dashboard-head strong { font-size: 13px; }
+    .token-dashboard-head span { color: var(--muted); font-size: 11px; }
+    .token-breakdown { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+    .token-stat { min-width: 0; padding: 9px; border-radius: 11px; background: #ffffffc9; }
+    .token-stat small { display: block; color: var(--muted); font-size: 10px; line-height: 1.25; }
+    .token-stat strong { display: block; margin-top: 3px; font-size: 14px; font-variant-numeric: tabular-nums; }
+    .context-track { height: 7px; margin-top: 11px; overflow: hidden; border-radius: 999px; background: #dfe3ef; }
+    .context-fill { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
+    .warning .context-fill { background: #d28b14; }
+    .overflow .context-fill { background: #d92d20; }
+    .token-totals { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .token-tests { margin-top: 18px; }
+    .token-tests-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .token-tests h2 { margin: 0; font-size: 15px; }
+    .token-tests-head span { color: var(--muted); font-size: 11px; }
+    .token-test-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    .token-test-card { padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: #ffffffb8; }
+    .token-test-card.overflow { border-color: #f3b3b3; background: #fff5f5; }
+    .token-test-card h3 { margin: 0 0 4px; font-size: 13px; }
+    .token-test-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .token-test-value { display: block; margin: 9px 0 3px; font-size: 16px; font-weight: 800; }
+    .token-test-status { color: #16805b; font-size: 11px; font-weight: 700; }
+    .token-test-card.overflow .token-test-status { color: #b42318; }
     .settings-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
     footer { text-align: center; }
     @media (max-width: 860px) {
@@ -275,6 +306,7 @@
       .hint { max-width: 210px; }
       .model { padding-inline: 9px; }
       .comparison-grid { grid-template-columns: 1fr; }
+      .token-breakdown, .token-test-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
@@ -299,7 +331,7 @@
         <aside class="response-format" aria-label="Настройки запроса">
           <div class="panel-title">
             <h2>Настройки</h2>
-            <span>задания 2–5</span>
+            <span>задания 2–8</span>
           </div>
 
           <section class="conversation-panel" aria-labelledby="conversation-title">
@@ -417,6 +449,20 @@
                 <span class="dialogue-status" id="dialogue-status"></span>
                 <button class="new-chat" id="new-chat" type="button">Удалить диалог</button>
               </div>
+              <section class="token-dashboard" id="token-dashboard" aria-label="Использование токенов">
+                <div class="token-dashboard-head">
+                  <strong>Токены этого хода</strong>
+                  <span id="token-state">В пределах лимита</span>
+                </div>
+                <div class="token-breakdown">
+                  <div class="token-stat"><small>Текущий запрос ≈</small><strong id="tokens-current">0</strong></div>
+                  <div class="token-stat"><small>История до запроса ≈</small><strong id="tokens-history">0</strong></div>
+                  <div class="token-stat"><small>Ответ модели</small><strong id="tokens-response">0</strong></div>
+                  <div class="token-stat"><small>Контекст заполнен</small><strong id="tokens-context">0%</strong></div>
+                </div>
+                <div class="context-track" aria-hidden="true"><div class="context-fill" id="context-fill"></div></div>
+                <p class="token-totals" id="token-totals"></p>
+              </section>
               <div class="messages" id="messages"></div>
             </section>
             <form id="chat-form">
@@ -438,6 +484,14 @@
             <button type="button">Реши логическую задачу пошагово</button>
             <button type="button">Придумай 5 идей для поста</button>
           </div>
+
+          <section class="token-tests" aria-labelledby="token-tests-title">
+            <div class="token-tests-head">
+              <h2 id="token-tests-title">Тестовые диалоги задания 8</h2>
+              <span id="token-tests-model">Расчёт для выбранной модели</span>
+            </div>
+            <div class="token-test-grid" id="token-test-grid"></div>
+          </section>
         </section>
       </div>
     </main>
@@ -474,6 +528,16 @@
     const newChat = document.querySelector('#new-chat');
     const newConversation = document.querySelector('#new-conversation');
     const conversationList = document.querySelector('#conversation-list');
+    const tokenDashboard = document.querySelector('#token-dashboard');
+    const tokenState = document.querySelector('#token-state');
+    const tokensCurrent = document.querySelector('#tokens-current');
+    const tokensHistory = document.querySelector('#tokens-history');
+    const tokensResponse = document.querySelector('#tokens-response');
+    const tokensContext = document.querySelector('#tokens-context');
+    const contextFill = document.querySelector('#context-fill');
+    const tokenTotals = document.querySelector('#token-totals');
+    const tokenTestGrid = document.querySelector('#token-test-grid');
+    const tokenTestsModel = document.querySelector('#token-tests-model');
     const sessionStorageKey = 'nastia-chat-session-id';
     const createSessionId = () => {
       if (window.crypto?.randomUUID) return window.crypto.randomUUID();
@@ -486,6 +550,7 @@
     function updateSelectedModel() {
       const label = modelSelect.options[modelSelect.selectedIndex].text;
       modelLabel.textContent = `✦ Работает на ${label}`;
+      loadTokenTests();
     }
 
     function resetDialogue() {
@@ -494,6 +559,77 @@
       result.className = '';
       dialogueStatus.className = 'dialogue-status';
       dialogueStatus.textContent = '';
+      tokenDashboard.className = 'token-dashboard';
+    }
+
+    const formatNumber = (value) => Number(value || 0).toLocaleString('ru-RU');
+
+    function renderTokenDashboard(report, totals = {}) {
+      if (!report && !totals?.turns?.length) {
+        tokenDashboard.className = 'token-dashboard';
+        return;
+      }
+      const lastTurn = totals?.turns?.at?.(-1) || {};
+      report = report || {
+        current_request_tokens: lastTurn.current_request_tokens,
+        history_tokens: lastTurn.history_tokens,
+        response_tokens: lastTurn.response_tokens,
+        estimated_input_tokens: lastTurn.estimated_input_tokens,
+        api_input_tokens: lastTurn.api_input_tokens,
+        context_limit: lastTurn.context_limit,
+        context_usage_percent: lastTurn.context_limit
+          ? lastTurn.estimated_input_tokens / lastTurn.context_limit * 100
+          : 0,
+        status: lastTurn.estimated_input_tokens > lastTurn.context_limit ? 'overflow' : 'ok',
+      };
+      const percent = Number(report.context_usage_percent || 0);
+      const status = report.status || (percent >= 80 ? 'warning' : 'ok');
+      tokenDashboard.className = `token-dashboard visible ${status}`;
+      tokensCurrent.textContent = formatNumber(report.current_request_tokens);
+      tokensHistory.textContent = formatNumber(report.history_tokens);
+      tokensResponse.textContent = formatNumber(report.response_tokens);
+      tokensContext.textContent = `${Math.min(percent, 999).toLocaleString('ru-RU', { maximumFractionDigits: 1 })}%`;
+      contextFill.style.width = `${Math.min(percent, 100)}%`;
+      tokenState.textContent = status === 'overflow'
+        ? 'Лимит превышен — запрос не отправлен'
+        : status === 'warning' ? 'Контекст почти заполнен' : 'В пределах лимита';
+      const cost = Number(totals.cumulative_cost_usd || 0);
+      const apiInput = report.api_input_tokens
+        ? `Фактический вход API: ${formatNumber(report.api_input_tokens)}. `
+        : '';
+      tokenTotals.textContent = `${apiInput}Диалог: ≈ ${formatNumber(report.conversation_tokens_after || totals.dialogue_tokens)} токенов. `
+        + `За ${formatNumber(totals.turn_count)} ходов: ${formatNumber(totals.cumulative_api_tokens)} API-токенов, ≈ $${cost.toFixed(8)}. `
+        + `Лимит модели: ${formatNumber(report.context_limit)}.`;
+    }
+
+    async function loadTokenTests() {
+      try {
+        const response = await fetch(`/api/token-tests?model=${encodeURIComponent(modelSelect.value)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        tokenTestsModel.textContent = `Расчёт для ${data.model_label}`;
+        tokenTestGrid.replaceChildren();
+        for (const scenario of data.scenarios || []) {
+          const card = document.createElement('article');
+          card.className = `token-test-card${scenario.overflow ? ' overflow' : ''}`;
+          const title = document.createElement('h3');
+          title.textContent = scenario.title;
+          const description = document.createElement('p');
+          description.textContent = scenario.description;
+          const value = document.createElement('span');
+          value.className = 'token-test-value';
+          value.textContent = `≈ ${formatNumber(scenario.dialogue_tokens)} токенов`;
+          const status = document.createElement('span');
+          status.className = 'token-test-status';
+          status.textContent = scenario.overflow ? 'Лимит превышен: HTTP 413' : `${scenario.message_count} сообщений · работает`;
+          const behavior = document.createElement('p');
+          behavior.textContent = scenario.expected_behavior;
+          card.append(title, description, value, status, behavior);
+          tokenTestGrid.append(card);
+        }
+      } catch (_) {
+        tokenTestGrid.textContent = 'Не удалось рассчитать тестовые диалоги.';
+      }
     }
 
     function addMessage(role, text) {
@@ -550,6 +686,7 @@
           result.className = 'visible';
           dialogueStatus.className = 'dialogue-status complete';
           dialogueStatus.textContent = `✓ Восстановлено сообщений: ${messages.length}`;
+          renderTokenDashboard(null, data.token_summary || {});
         } else {
           resetDialogue();
         }
@@ -874,7 +1011,11 @@
           }),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Не удалось получить ответ');
+        if (!response.ok) {
+          const requestError = new Error(data.error || 'Не удалось получить ответ');
+          requestError.details = data;
+          throw requestError;
+        }
         result.className = 'visible';
         if (anyComparisonEnabled) {
           addComparison(
@@ -897,6 +1038,7 @@
         addMessage('assistant', answer);
         const metrics = createMetrics(data.metrics);
         if (metrics) messagesView.append(metrics);
+        renderTokenDashboard(data.metrics?.token_report, data.metrics?.conversation_totals);
         messages.push({ role: 'assistant', content: answer });
         await loadConversations();
         dialogueStatus.className = data.complete ? 'dialogue-status complete' : 'dialogue-status';
@@ -912,6 +1054,7 @@
       } catch (error) {
         result.className = 'visible error';
         dialogueStatus.textContent = error.message || 'Не удалось получить ответ.';
+        if (error.details?.token_report) renderTokenDashboard(error.details.token_report, {});
         messages.pop();
       } finally {
         send.disabled = false;
@@ -920,6 +1063,7 @@
     updatePromptLimitControl();
     updateWordLimitControl();
     restoreHistory();
+    loadTokenTests();
   </script>
 </body>
 </html>
