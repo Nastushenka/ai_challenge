@@ -136,7 +136,7 @@ class SimpleAgentTest(unittest.TestCase):
 
     @patch.dict(
         os.environ,
-        {"LLM_API_KEY": "test-key", "DEEPSEEK_V4_PRO_CONTEXT_WINDOW": "10"},
+        {"LLM_API_KEY": "test-key", "DEEPSEEK_CONTEXT_WINDOW": "10"},
     )
     @patch("agent.urlopen")
     def test_context_overflow_is_stopped_before_api_call(self, mocked_urlopen):

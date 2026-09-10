@@ -26,6 +26,7 @@ MODEL_OPTIONS = {
         "api_key_env": "LLM_API_KEY",
         "disable_reasoning_for_temperature": True,
         "context_window": 128_000,
+        "context_env": "DEEPSEEK_CONTEXT_WINDOW",
     },
     "gemma-3-4b": {
         "label": "Gemma 3 4B",
@@ -37,6 +38,7 @@ MODEL_OPTIONS = {
         "disable_reasoning_for_temperature": False,
         "pricing": {"input": 0.05, "output": 0.10},
         "context_window": 131_072,
+        "context_env": "GEMMA_CONTEXT_WINDOW",
     },
     "qwen3-8b": {
         "label": "Qwen 3 8B",
@@ -48,6 +50,7 @@ MODEL_OPTIONS = {
         "disable_reasoning_for_temperature": False,
         "pricing": {"input": 0.07, "output": 0.18},
         "context_window": 32_768,
+        "context_env": "QWEN_CONTEXT_WINDOW",
     },
 }
 
@@ -483,7 +486,7 @@ class SimpleAgent:
         estimated_input_tokens = current_tokens + history_tokens + instructions_tokens + 2
         context_limit = int(
             os.environ.get(
-                f"{self.model_key.upper().replace('-', '_')}_CONTEXT_WINDOW",
+                self.config["context_env"],
                 self.config["context_window"],
             )
         )

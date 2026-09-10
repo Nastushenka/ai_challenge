@@ -23,9 +23,11 @@ DeepSeek и Hugging Face используют отдельные ключи в �
 - `LLM_API_KEY` — API-ключ;
 - `LLM_BASE_URL` — `https://api.deepseek.com`;
 - `LLM_MODEL` — `deepseek-v4-pro`.
+- `DEEPSEEK_CONTEXT_WINDOW` — используемый лимит контекста DeepSeek;
 - `HF_TOKEN` — токен Hugging Face с правом вызова Inference Providers;
 - `HF_BASE_URL` — `https://router.huggingface.co/v1`;
 - `HF_GEMMA_MODEL` и `HF_QWEN_MODEL` — идентификаторы моделей Hugging Face.
+- `GEMMA_CONTEXT_WINDOW` и `QWEN_CONTEXT_WINDOW` — лимиты контекста моделей.
 
 Файл `.env` исключён из Git и не попадёт в репозиторий.
 
