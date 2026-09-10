@@ -25,7 +25,7 @@ MODEL_OPTIONS = {
         "base_url_default": "https://api.deepseek.com",
         "api_key_env": "LLM_API_KEY",
         "disable_reasoning_for_temperature": True,
-        "context_window": 128_000,
+        "context_window": 1_000_000,
         "context_env": "DEEPSEEK_CONTEXT_WINDOW",
     },
     "gemma-3-4b": {

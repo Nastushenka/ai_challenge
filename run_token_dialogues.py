@@ -11,41 +11,14 @@ SESSION_IDS = (
 )
 
 
-def create_visible_test_dialogues(model_key="deepseek-v4-pro"):
-    store = ConversationStore()
+def create_visible_test_dialogues(model_key="deepseek-v4-pro", history_database=None):
+    store = (
+        ConversationStore(history_database)
+        if history_database is not None
+        else ConversationStore()
+    )
     dialogues = prepared_dialogues(model_key)
     reports = analyze_prepared_dialogues(model_key)
-
-    dialogues[0]["messages"] = [
-        {
-            "role": "user",
-            "content": "[Тест 1 · короткий] Кодовое слово — Лазурь. Запомни его.",
-        },
-        {"role": "assistant", "content": "Запомнил: кодовое слово — Лазурь."},
-        {"role": "user", "content": "Какое кодовое слово?"},
-        {
-            "role": "assistant",
-            "content": "Кодовое слово — Лазурь. Контекст короткого диалога сохранён.",
-        },
-    ]
-    dialogues[1]["messages"][0]["content"] = (
-        "[Тест 2 · длинный] " + dialogues[1]["messages"][0]["content"]
-    )
-    dialogues[2]["messages"] = [
-        {
-            "role": "user",
-            "content": (
-                "[Тест 3 · переполнение] Попытка отправить контекст больше окна модели."
-            ),
-        },
-        {
-            "role": "assistant",
-            "content": (
-                "Запрос остановлен до API: расчётный контекст превышает лимит модели. "
-                "История не изменена, стоимость вызова — $0."
-            ),
-        },
-    ]
 
     results = []
     for session_id, dialogue, scenario in zip(SESSION_IDS, dialogues, reports):

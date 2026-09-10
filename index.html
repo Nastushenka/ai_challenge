@@ -607,7 +607,7 @@
         const response = await fetch(`/api/token-tests?model=${encodeURIComponent(modelSelect.value)}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
-        tokenTestsModel.textContent = `Расчёт для ${data.model_label}`;
+        tokenTestsModel.textContent = `Единая локальная оценка для ${data.model_label}`;
         tokenTestGrid.replaceChildren();
         for (const scenario of data.scenarios || []) {
           const card = document.createElement('article');
@@ -635,7 +635,12 @@
     function addMessage(role, text) {
       const message = document.createElement('div');
       message.className = `message ${role}`;
-      message.textContent = text;
+      const fullText = String(text || '');
+      const displayLimit = 4000;
+      message.textContent = fullText.length > displayLimit
+        ? `${fullText.slice(0, 3600)}\n\n… Сверхдлинное сообщение сокращено только на экране. `
+          + `Полный текст (${fullText.length.toLocaleString('ru-RU')} символов) сохранён и учтён в статистике.`
+        : fullText;
       messagesView.append(message);
       messagesView.scrollTop = messagesView.scrollHeight;
     }

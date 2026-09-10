@@ -71,10 +71,16 @@ def prepared_dialogues(model_key="deepseek-v4-pro"):
         "title": "Короткий диалог",
         "description": "Два коротких обмена: проверка базового подсчёта.",
         "messages": [
-            {"role": "user", "content": "Меня зовут Настя. Запомни это."},
-            {"role": "assistant", "content": "Хорошо, запомнила: вас зовут Настя."},
-            {"role": "user", "content": "Как меня зовут?"},
-            {"role": "assistant", "content": "Вас зовут Настя."},
+            {
+                "role": "user",
+                "content": "[Тест 1 · короткий] Кодовое слово — Лазурь. Запомни его.",
+            },
+            {"role": "assistant", "content": "Запомнил: кодовое слово — Лазурь."},
+            {"role": "user", "content": "Какое кодовое слово?"},
+            {
+                "role": "assistant",
+                "content": "Кодовое слово — Лазурь. Контекст короткого диалога сохранён.",
+            },
         ],
     }
     long_messages = []
@@ -84,7 +90,8 @@ def prepared_dialogues(model_key="deepseek-v4-pro"):
                 {
                     "role": "user",
                     "content": (
-                        f"Ход {turn}. Продолжай разрабатывать план учебного проекта. "
+                        ("[Тест 2 · длинный] " if turn == 1 else "")
+                        + f"Ход {turn}. Продолжай разрабатывать план учебного проекта. "
                         "Учитывай цели, ограничения, сроки, риски и результаты всех "
                         "предыдущих сообщений. Добавь одно новое обоснованное решение."
                     ),
@@ -104,7 +111,10 @@ def prepared_dialogues(model_key="deepseek-v4-pro"):
         "description": "30 обменов: видно накопление входных токенов и стоимости.",
         "messages": long_messages,
     }
-    overflow_text = "важный контекст " * (limit // 4)
+    overflow_text = (
+        "[Тест 3 · переполнение] "
+        + "важный контекст " * (limit // 4)
+    )
     overflow_dialogue = {
         "id": "overflow",
         "title": "Диалог сверх лимита",
@@ -118,4 +128,3 @@ def analyze_prepared_dialogues(model_key="deepseek-v4-pro"):
     if model_key not in MODEL_OPTIONS:
         raise ValueError("Неизвестная модель.")
     return [_dialogue_report(dialogue, model_key) for dialogue in prepared_dialogues(model_key)]
-

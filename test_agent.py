@@ -5,8 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent import ContextWindowExceeded, ConversationStore, SimpleAgent
-from token_scenarios import analyze_prepared_dialogues
+from agent import (
+    MODEL_OPTIONS,
+    ContextWindowExceeded,
+    ConversationStore,
+    SimpleAgent,
+    estimate_messages_tokens,
+)
+from run_token_dialogues import SESSION_IDS, create_visible_test_dialogues
+from token_scenarios import analyze_prepared_dialogues, prepared_dialogues
 
 
 class FakeResponse:
@@ -159,6 +166,22 @@ class SimpleAgentTest(unittest.TestCase):
         long_costs = [turn["cumulative_cost_usd"] for turn in scenarios[1]["timeline"]]
         self.assertEqual(long_inputs, sorted(long_inputs))
         self.assertEqual(long_costs, sorted(long_costs))
+
+    def test_visible_dialogues_and_cards_use_identical_messages(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "history.db"
+            create_visible_test_dialogues("qwen3-8b", database)
+            store = ConversationStore(database)
+            scenarios = analyze_prepared_dialogues("qwen3-8b")
+
+            for session_id, scenario in zip(SESSION_IDS, scenarios):
+                self.assertEqual(
+                    estimate_messages_tokens(store.get(session_id)),
+                    scenario["dialogue_tokens"],
+                )
+
+    def test_deepseek_context_window_matches_current_model(self):
+        self.assertEqual(MODEL_OPTIONS["deepseek-v4-pro"]["context_window"], 1_000_000)
 
 
 if __name__ == "__main__":
