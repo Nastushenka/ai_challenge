@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from context_manager import build_compressed_context
+
 
 ROOT = Path(__file__).parent
 SYSTEM_CA_FILE = Path("/etc/ssl/cert.pem")
@@ -169,6 +171,9 @@ class ConversationStore:
                 connection.execute(
                     "DELETE FROM messages WHERE session_id = ?", (session_id,)
                 )
+                connection.execute(
+                    "DELETE FROM conversation_summaries WHERE session_id = ?", (session_id,)
+                )
                 connection.executemany(
                     "INSERT INTO messages(session_id, role, content, created_at) "
                     "VALUES (?, ?, ?, ?)",
@@ -176,6 +181,51 @@ class ConversationStore:
                         (session_id, message["role"], message["content"], now)
                         for message in clean_messages
                     ],
+                )
+
+    def get_summary(self, session_id):
+        with self._lock:
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT summary, summarized_message_count, recent_messages_limit, "
+                    "updated_at FROM conversation_summaries WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+        if not row:
+            return {
+                "summary": "",
+                "summarized_message_count": 0,
+                "recent_messages_limit": 0,
+                "updated_at": None,
+            }
+        return {
+            "summary": row[0],
+            "summarized_message_count": row[1],
+            "recent_messages_limit": row[2],
+            "updated_at": row[3],
+        }
+
+    def save_summary(
+        self, session_id, summary, summarized_message_count, recent_messages_limit
+    ):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            with self._connection() as connection:
+                connection.execute(
+                    "INSERT INTO conversation_summaries("
+                    "session_id, summary, summarized_message_count, "
+                    "recent_messages_limit, updated_at) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, "
+                    "summarized_message_count = excluded.summarized_message_count, "
+                    "recent_messages_limit = excluded.recent_messages_limit, "
+                    "updated_at = excluded.updated_at",
+                    (
+                        session_id,
+                        summary,
+                        summarized_message_count,
+                        recent_messages_limit,
+                        now,
+                    ),
                 )
 
     def append_exchange(self, session_id, user_message, assistant_message):
@@ -207,7 +257,9 @@ class ConversationStore:
                     "session_id, model_key, current_request_tokens, history_tokens, "
                     "instructions_tokens, estimated_input_tokens, input_tokens, "
                     "output_tokens, total_tokens, cost_usd, context_limit, created_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ", compression_enabled, full_history_tokens, summary_tokens, "
+                    "tokens_saved, summarized_message_count, recent_messages_limit"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         session_id,
                         model_key,
@@ -221,6 +273,12 @@ class ConversationStore:
                         cost_usd,
                         report["context_limit"],
                         now,
+                        int(bool(report.get("compression_enabled"))),
+                        report.get("full_history_tokens", report["history_tokens"]),
+                        report.get("summary_tokens", 0),
+                        report.get("tokens_saved", 0),
+                        report.get("summarized_message_count", 0),
+                        report.get("recent_messages_limit", 0),
                     ),
                 )
 
@@ -230,7 +288,9 @@ class ConversationStore:
                 rows = connection.execute(
                     "SELECT current_request_tokens, history_tokens, instructions_tokens, "
                     "estimated_input_tokens, input_tokens, output_tokens, total_tokens, "
-                    "cost_usd, context_limit, created_at FROM request_metrics "
+                    "cost_usd, context_limit, created_at, compression_enabled, "
+                    "full_history_tokens, summary_tokens, tokens_saved, "
+                    "summarized_message_count, recent_messages_limit FROM request_metrics "
                     "WHERE session_id = ? ORDER BY id",
                     (session_id,),
                 ).fetchall()
@@ -247,6 +307,12 @@ class ConversationStore:
                 "cost_usd": row[7],
                 "context_limit": row[8],
                 "created_at": row[9],
+                "compression_enabled": bool(row[10]),
+                "full_history_tokens": row[11],
+                "summary_tokens": row[12],
+                "tokens_saved": row[13],
+                "summarized_message_count": row[14],
+                "recent_messages_limit": row[15],
             }
             for index, row in enumerate(rows, 1)
         ]
@@ -333,6 +399,29 @@ class ConversationStore:
                     "CREATE INDEX IF NOT EXISTS idx_request_metrics_session_id_id "
                     "ON request_metrics(session_id, id)"
                 )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS conversation_summaries ("
+                    "session_id TEXT PRIMARY KEY REFERENCES conversations(session_id) "
+                    "ON DELETE CASCADE, summary TEXT NOT NULL, "
+                    "summarized_message_count INTEGER NOT NULL, "
+                    "recent_messages_limit INTEGER NOT NULL, updated_at TEXT NOT NULL)"
+                )
+                metric_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(request_metrics)")
+                }
+                for name, definition in (
+                    ("compression_enabled", "INTEGER NOT NULL DEFAULT 0"),
+                    ("full_history_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                    ("summary_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                    ("tokens_saved", "INTEGER NOT NULL DEFAULT 0"),
+                    ("summarized_message_count", "INTEGER NOT NULL DEFAULT 0"),
+                    ("recent_messages_limit", "INTEGER NOT NULL DEFAULT 0"),
+                ):
+                    if name not in metric_columns:
+                        connection.execute(
+                            f"ALTER TABLE request_metrics ADD COLUMN {name} {definition}"
+                        )
                 connection.execute("PRAGMA optimize")
 
     def _migrate_legacy_json(self):
@@ -384,6 +473,9 @@ class SimpleAgent:
         api_key=None,
         session_id=None,
         history_database=HISTORY_DATABASE,
+        compress_history=True,
+        recent_messages_limit=10,
+        summary_batch_size=10,
     ):
         if model_key not in MODEL_OPTIONS:
             raise ValueError("Неизвестная модель агента.")
@@ -392,6 +484,9 @@ class SimpleAgent:
         self.api_key = api_key or os.environ.get(self.config["api_key_env"])
         self.session_id = session_id
         self.store = ConversationStore(history_database) if session_id else None
+        self.compress_history = bool(compress_history)
+        self.recent_messages_limit = max(1, int(recent_messages_limit))
+        self.summary_batch_size = max(1, int(summary_batch_size))
         if not self.api_key:
             raise AgentConfigurationError(
                 f"На сервере не настроен {self.config['api_key_env']} "
@@ -414,10 +509,30 @@ class SimpleAgent:
         """Continue a persistent conversation and save the new exchange."""
         if not self.store:
             raise AgentConfigurationError("Для диалога не указан session_id.")
-        messages = self.history
-        token_report = self.token_report(user_request, messages, instructions)
-        messages.append({"role": "user", "content": user_request})
-        result = self.run(messages, instructions, temperature, token_report=token_report)
+        history = self.history
+        full_history_tokens = estimate_messages_tokens(history)
+        compression = self._prepare_history(history)
+        context_messages = compression["messages"]
+        token_report = self.token_report(user_request, context_messages, instructions)
+        compressed_history_tokens = token_report["history_tokens"]
+        token_report.update(
+            {
+                "compression_enabled": self.compress_history,
+                "full_history_tokens": full_history_tokens,
+                "summary_tokens": (
+                    estimate_text_tokens(compression["summary"]) + 4
+                    if compression["summary"]
+                    else 0
+                ),
+                "tokens_saved": max(0, full_history_tokens - compressed_history_tokens),
+                "summarized_message_count": compression["summarized_message_count"],
+                "recent_messages_limit": self.recent_messages_limit,
+            }
+        )
+        request_messages = context_messages + [{"role": "user", "content": user_request}]
+        result = self.run(
+            request_messages, instructions, temperature, token_report=token_report
+        )
         self.store.append_exchange(self.session_id, user_request, result["text"])
         result["token_report"]["conversation_tokens_after"] = estimate_messages_tokens(
             self.history
@@ -427,6 +542,33 @@ class SimpleAgent:
         )
         result["conversation_totals"] = self.store.usage_summary(self.session_id)
         return result
+
+    def _prepare_history(self, history):
+        if not self.compress_history:
+            return {
+                "messages": list(history),
+                "summary": "",
+                "summarized_message_count": 0,
+                "recent_message_count": len(history),
+            }
+        state = self.store.get_summary(self.session_id)
+        if state["recent_messages_limit"] not in {0, self.recent_messages_limit}:
+            state = {"summary": "", "summarized_message_count": 0}
+        compressed = build_compressed_context(
+            history,
+            previous_summary=state.get("summary", ""),
+            summarized_message_count=state.get("summarized_message_count", 0),
+            recent_messages_limit=self.recent_messages_limit,
+            summary_batch_size=self.summary_batch_size,
+        )
+        if compressed["summary"]:
+            self.store.save_summary(
+                self.session_id,
+                compressed["summary"],
+                compressed["summarized_message_count"],
+                self.recent_messages_limit,
+            )
+        return compressed
 
     def clear_history(self):
         if self.store:

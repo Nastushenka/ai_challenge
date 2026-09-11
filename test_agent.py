@@ -14,6 +14,7 @@ from agent import (
 )
 from run_token_dialogues import SESSION_IDS, create_visible_test_dialogues
 from token_scenarios import analyze_prepared_dialogues, prepared_dialogues
+from compression_scenarios import analyze_compression, create_visible_compression_dialogue
 
 
 class FakeResponse:
@@ -182,6 +183,65 @@ class SimpleAgentTest(unittest.TestCase):
 
     def test_deepseek_context_window_matches_current_model(self):
         self.assertEqual(MODEL_OPTIONS["deepseek-v4-pro"]["context_window"], 1_000_000)
+
+    @patch.dict(os.environ, {"LLM_API_KEY": "test-key"})
+    @patch("agent.urlopen", return_value=FakeResponse("Контрольные факты сохранены"))
+    def test_old_messages_are_replaced_by_persistent_summary(self, mocked_urlopen):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "history.db"
+            agent = SimpleAgent(
+                "deepseek-v4-pro",
+                session_id="compression-session",
+                history_database=database,
+                compress_history=True,
+                recent_messages_limit=2,
+                summary_batch_size=10,
+            )
+            history = [
+                {
+                    "role": "user" if index % 2 == 0 else "assistant",
+                    "content": (
+                        "Проект Аврора, срок 15 июня, бюджет 50 000 рублей. "
+                        f"Подробное сообщение номер {index} с дополнительным контекстом."
+                    ),
+                }
+                for index in range(12)
+            ]
+            agent.store.save("compression-session", history)
+
+            result = agent.chat("Назови контрольные факты")
+
+            request = mocked_urlopen.call_args.args[0]
+            request_input = json.loads(request.data)["input"]
+            self.assertEqual(request_input[0]["role"], "system")
+            self.assertIn("Проект Аврора", request_input[0]["content"])
+            self.assertEqual(request_input[1:3], history[-2:])
+            self.assertEqual(request_input[-1]["content"], "Назови контрольные факты")
+            summary = ConversationStore(database).get_summary("compression-session")
+            self.assertEqual(summary["summarized_message_count"], 10)
+            self.assertGreater(result["token_report"]["tokens_saved"], 0)
+
+    def test_compression_demo_preserves_facts_and_saves_tokens(self):
+        report = analyze_compression()
+
+        self.assertEqual(report["quality_without_compression"], 3)
+        self.assertEqual(report["quality_with_compression"], 3)
+        self.assertGreater(report["tokens_without_compression"], report["tokens_with_compression"])
+        self.assertGreater(report["tokens_saved"], 0)
+
+    def test_visible_compression_dialogue_uses_saved_summary_metrics(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = Path(temporary_directory) / "history.db"
+            report = create_visible_compression_dialogue(
+                "deepseek-v4-pro", database
+            )
+            store = ConversationStore(database)
+            summary = store.get_summary(report["session_id"])
+            totals = store.usage_summary(report["session_id"])
+
+            self.assertEqual(summary["summarized_message_count"], 20)
+            self.assertEqual(totals["turns"][0]["tokens_saved"], report["tokens_saved"])
+            self.assertEqual(len(store.get(report["session_id"])), 30)
 
 
 if __name__ == "__main__":

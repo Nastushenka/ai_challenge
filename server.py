@@ -15,6 +15,7 @@ from agent import (
     estimate_messages_tokens,
 )
 from token_scenarios import analyze_prepared_dialogues
+from compression_scenarios import analyze_compression
 
 
 ROOT = Path(__file__).parent
@@ -305,6 +306,9 @@ class Handler(SimpleHTTPRequestHandler):
                 },
             )
             return
+        if parsed.path == "/api/compression-tests":
+            self.send_json(200, analyze_compression())
+            return
         if parsed.path != "/api/history":
             super().do_GET()
             return
@@ -316,7 +320,14 @@ class Handler(SimpleHTTPRequestHandler):
         history = store.get(session_id)
         summary = store.usage_summary(session_id)
         summary["dialogue_tokens"] = estimate_messages_tokens(history)
-        self.send_json(200, {"history": history, "token_summary": summary})
+        self.send_json(
+            200,
+            {
+                "history": history,
+                "token_summary": summary,
+                "context_summary": store.get_summary(session_id),
+            },
+        )
 
     def do_POST(self):
         if self.path == "/api/reset":
@@ -358,6 +369,8 @@ class Handler(SimpleHTTPRequestHandler):
             finish_mode = payload.get("finish_mode", "none")
             finish_value = payload.get("finish_value", "").strip()
             session_id = payload.get("session_id", "")
+            use_context_compression = payload.get("use_context_compression", True) is not False
+            recent_messages_limit = int(payload.get("recent_messages_limit", 10))
         except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
             self.send_json(400, {"error": "Некорректный запрос."})
             return
@@ -372,7 +385,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Некорректный идентификатор диалога."})
             return
         try:
-            selected_agent = SimpleAgent(model_key, session_id=session_id)
+            selected_agent = SimpleAgent(
+                model_key,
+                session_id=session_id,
+                compress_history=use_context_compression,
+                recent_messages_limit=recent_messages_limit,
+            )
         except AgentConfigurationError as error:
             self.send_json(503, {"error": str(error)})
             return
@@ -380,6 +398,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(
                 400,
                 {"error": "Ограничение запроса должно быть от 1 до 12 000 символов."},
+            )
+            return
+        if not 2 <= recent_messages_limit <= 50:
+            self.send_json(
+                400,
+                {"error": "Количество последних сообщений должно быть от 2 до 50."},
             )
             return
         if len(prompt) > max_prompt_chars:
@@ -540,6 +564,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "answer": answer,
                 "complete": complete,
                 "metrics": result_metrics(agent_result),
+                "context_summary": selected_agent.store.get_summary(session_id),
             },
         )
 

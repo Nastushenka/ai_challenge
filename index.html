@@ -123,6 +123,16 @@
     }
     .temperature-row input:disabled { opacity: .42; cursor: not-allowed; }
     .temperature-help { display: block; margin-top: 5px; color: var(--muted); }
+    .context-control { margin-top: 0; }
+    .context-limit-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px;
+    }
+    .context-limit-row label { color: var(--muted); }
+    .context-limit-row input {
+      width: 76px; border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px;
+      background: white; color: var(--ink); font: inherit; font-size: 13px; outline: none;
+    }
+    .context-limit-row input:disabled { opacity: .42; cursor: not-allowed; }
     .finish-control { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line); }
     .finish-control strong { display: block; margin-bottom: 7px; color: var(--ink); }
     .finish-row { display: grid; grid-template-columns: 170px 1fr; gap: 8px; }
@@ -281,6 +291,12 @@
     .warning .context-fill { background: #d28b14; }
     .overflow .context-fill { background: #d92d20; }
     .token-totals { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .compression-status { margin-top: 10px; padding: 10px; border-radius: 11px; background: #e9f8f1; }
+    .compression-status strong { display: block; color: #126447; font-size: 12px; }
+    .compression-status span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .stored-summary { margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .stored-summary p { max-height: 150px; overflow: auto; white-space: pre-wrap; line-height: 1.45; }
+    .compression-test-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
     .token-tests { margin-top: 18px; }
     .token-tests-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
     .token-tests h2 { margin: 0; font-size: 15px; }
@@ -306,7 +322,7 @@
       .hint { max-width: 210px; }
       .model { padding-inline: 9px; }
       .comparison-grid { grid-template-columns: 1fr; }
-      .token-breakdown, .token-test-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .token-breakdown, .token-test-grid, .compression-test-grid { grid-template-columns: 1fr; }
     }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
@@ -331,7 +347,7 @@
         <aside class="response-format" aria-label="Настройки запроса">
           <div class="panel-title">
             <h2>Настройки</h2>
-            <span>задания 2–8</span>
+            <span>задания 2–9</span>
           </div>
 
           <section class="conversation-panel" aria-labelledby="conversation-title">
@@ -360,6 +376,23 @@
                 <span><strong>3 модели</strong><small>Качество, скорость, токены и стоимость</small></span>
               </label>
               <p class="settings-note">Без флагов выполняется один обычный запрос.</p>
+            </div>
+          </details>
+
+          <details class="settings-group" open>
+            <summary>Память и контекст</summary>
+            <div class="settings-content">
+              <div class="context-control">
+                <label class="compare-toggle" for="use-context-compression">
+                  <input id="use-context-compression" type="checkbox" checked>
+                  <span><strong>Сжимать старую историю</strong><small>Каждые 10 старых сообщений заменяются summary</small></span>
+                </label>
+                <div class="context-limit-row">
+                  <label for="recent-messages-limit">Последние сообщения без изменений</label>
+                  <input id="recent-messages-limit" type="number" min="2" max="50" step="2" value="10" inputmode="numeric">
+                </div>
+                <p class="settings-note">Полная переписка остаётся в базе. В модель отправляются summary и последние N сообщений.</p>
+              </div>
             </div>
           </details>
 
@@ -462,6 +495,14 @@
                 </div>
                 <div class="context-track" aria-hidden="true"><div class="context-fill" id="context-fill"></div></div>
                 <p class="token-totals" id="token-totals"></p>
+                <div class="compression-status" id="compression-status" hidden>
+                  <strong id="compression-result"></strong>
+                  <span id="compression-details"></span>
+                  <details class="stored-summary" id="stored-summary" hidden>
+                    <summary>Показать сохранённый summary</summary>
+                    <p id="stored-summary-text"></p>
+                  </details>
+                </div>
               </section>
               <div class="messages" id="messages"></div>
             </section>
@@ -491,6 +532,14 @@
               <span id="token-tests-model">Расчёт для выбранной модели</span>
             </div>
             <div class="token-test-grid" id="token-test-grid"></div>
+          </section>
+
+          <section class="token-tests" aria-labelledby="compression-tests-title">
+            <div class="token-tests-head">
+              <h2 id="compression-tests-title">Проверка компрессии задания 9</h2>
+              <span>30 сообщений · 3 контрольных факта</span>
+            </div>
+            <div class="compression-test-grid" id="compression-test-grid"></div>
           </section>
         </section>
       </div>
@@ -538,6 +587,14 @@
     const tokenTotals = document.querySelector('#token-totals');
     const tokenTestGrid = document.querySelector('#token-test-grid');
     const tokenTestsModel = document.querySelector('#token-tests-model');
+    const useContextCompression = document.querySelector('#use-context-compression');
+    const recentMessagesLimit = document.querySelector('#recent-messages-limit');
+    const compressionStatus = document.querySelector('#compression-status');
+    const compressionResult = document.querySelector('#compression-result');
+    const compressionDetails = document.querySelector('#compression-details');
+    const storedSummary = document.querySelector('#stored-summary');
+    const storedSummaryText = document.querySelector('#stored-summary-text');
+    const compressionTestGrid = document.querySelector('#compression-test-grid');
     const sessionStorageKey = 'nastia-chat-session-id';
     const createSessionId = () => {
       if (window.crypto?.randomUUID) return window.crypto.randomUUID();
@@ -560,11 +617,12 @@
       dialogueStatus.className = 'dialogue-status';
       dialogueStatus.textContent = '';
       tokenDashboard.className = 'token-dashboard';
+      compressionStatus.hidden = true;
     }
 
     const formatNumber = (value) => Number(value || 0).toLocaleString('ru-RU');
 
-    function renderTokenDashboard(report, totals = {}) {
+    function renderTokenDashboard(report, totals = {}, contextSummary = {}) {
       if (!report && !totals?.turns?.length) {
         tokenDashboard.className = 'token-dashboard';
         return;
@@ -581,6 +639,12 @@
           ? lastTurn.estimated_input_tokens / lastTurn.context_limit * 100
           : 0,
         status: lastTurn.estimated_input_tokens > lastTurn.context_limit ? 'overflow' : 'ok',
+        compression_enabled: lastTurn.compression_enabled,
+        full_history_tokens: lastTurn.full_history_tokens,
+        summary_tokens: lastTurn.summary_tokens,
+        tokens_saved: lastTurn.tokens_saved,
+        summarized_message_count: lastTurn.summarized_message_count,
+        recent_messages_limit: lastTurn.recent_messages_limit,
       };
       const percent = Number(report.context_usage_percent || 0);
       const status = report.status || (percent >= 80 ? 'warning' : 'ok');
@@ -600,6 +664,53 @@
       tokenTotals.textContent = `${apiInput}Диалог: ≈ ${formatNumber(report.conversation_tokens_after || totals.dialogue_tokens)} токенов. `
         + `За ${formatNumber(totals.turn_count)} ходов: ${formatNumber(totals.cumulative_api_tokens)} API-токенов, ≈ $${cost.toFixed(8)}. `
         + `Лимит модели: ${formatNumber(report.context_limit)}.`;
+      const compressionEnabled = Boolean(report.compression_enabled);
+      compressionStatus.hidden = !compressionEnabled;
+      if (compressionEnabled) {
+        const before = Number(report.full_history_tokens || 0);
+        const after = Number(report.history_tokens || 0);
+        const saved = Number(report.tokens_saved || 0);
+        const percentSaved = before ? Math.round(saved / before * 100) : 0;
+        compressionResult.textContent = saved
+          ? `Компрессия сэкономила ≈ ${formatNumber(saved)} токенов (${percentSaved}%)`
+          : 'Компрессия включена — история пока помещается без сжатия';
+        compressionDetails.textContent = `${formatNumber(report.summarized_message_count)} старых сообщений в summary · `
+          + `последние ${formatNumber(report.recent_messages_limit)} хранятся без изменений · `
+          + `контекст истории: ${formatNumber(before)} → ${formatNumber(after)} токенов.`;
+        const summaryText = contextSummary?.summary || '';
+        storedSummary.hidden = !summaryText;
+        storedSummaryText.textContent = summaryText;
+      }
+    }
+
+    async function loadCompressionTests() {
+      try {
+        const response = await fetch('/api/compression-tests');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        compressionTestGrid.replaceChildren();
+        const cards = [
+          ['Без сжатия', `${formatNumber(data.tokens_without_compression)} токенов`, `${data.quality_without_compression}/${data.quality_total} факта доступны`],
+          ['Со сжатием', `${formatNumber(data.tokens_with_compression)} токенов`, `${data.quality_with_compression}/${data.quality_total} факта сохранены`],
+          ['Экономия', `${formatNumber(data.tokens_saved)} токенов`, `${data.savings_percent}% меньше контекста`],
+        ];
+        for (const [titleText, valueText, statusText] of cards) {
+          const card = document.createElement('article');
+          card.className = 'token-test-card';
+          const title = document.createElement('h3');
+          title.textContent = titleText;
+          const value = document.createElement('span');
+          value.className = 'token-test-value';
+          value.textContent = valueText;
+          const status = document.createElement('span');
+          status.className = 'token-test-status';
+          status.textContent = statusText;
+          card.append(title, value, status);
+          compressionTestGrid.append(card);
+        }
+      } catch (_) {
+        compressionTestGrid.textContent = 'Не удалось рассчитать тест компрессии.';
+      }
     }
 
     async function loadTokenTests() {
@@ -691,7 +802,7 @@
           result.className = 'visible';
           dialogueStatus.className = 'dialogue-status complete';
           dialogueStatus.textContent = `✓ Восстановлено сообщений: ${messages.length}`;
-          renderTokenDashboard(null, data.token_summary || {});
+          renderTokenDashboard(null, data.token_summary || {}, data.context_summary || {});
         } else {
           resetDialogue();
         }
@@ -839,6 +950,10 @@
       maxWords.disabled = !useWordLimit.checked;
     }
 
+    function updateContextCompressionControl() {
+      recentMessagesLimit.disabled = !useContextCompression.checked;
+    }
+
     function updateTemperatureControl() {
       const enabled = useTemperature.checked && !useTemperature.disabled;
       temperatureRange.disabled = !enabled;
@@ -849,6 +964,7 @@
     modelSelect.addEventListener('change', updateSelectedModel);
     usePromptLimit.addEventListener('change', updatePromptLimitControl);
     useWordLimit.addEventListener('change', updateWordLimitControl);
+    useContextCompression.addEventListener('change', updateContextCompressionControl);
     maxWords.addEventListener('change', () => {
       maxWords.value = clampWordLimit(maxWords.value);
     });
@@ -1013,6 +1129,8 @@
             finish_mode: selectedFinishMode,
             finish_value: finishValue.value.trim(),
             session_id: sessionId,
+            use_context_compression: useContextCompression.checked,
+            recent_messages_limit: Math.min(50, Math.max(2, Number(recentMessagesLimit.value) || 10)),
           }),
         });
         const data = await response.json();
@@ -1043,7 +1161,7 @@
         addMessage('assistant', answer);
         const metrics = createMetrics(data.metrics);
         if (metrics) messagesView.append(metrics);
-        renderTokenDashboard(data.metrics?.token_report, data.metrics?.conversation_totals);
+        renderTokenDashboard(data.metrics?.token_report, data.metrics?.conversation_totals, data.context_summary || {});
         messages.push({ role: 'assistant', content: answer });
         await loadConversations();
         dialogueStatus.className = data.complete ? 'dialogue-status complete' : 'dialogue-status';
@@ -1067,8 +1185,10 @@
     });
     updatePromptLimitControl();
     updateWordLimitControl();
+    updateContextCompressionControl();
     restoreHistory();
     loadTokenTests();
+    loadCompressionTests();
   </script>
 </body>
 </html>
