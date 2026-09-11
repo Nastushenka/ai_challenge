@@ -12,6 +12,26 @@ from context_manager import build_compressed_context, summary_contains_fact
 CONTROL_FACTS = ("Проект Аврора", "15 июня", "50 000 рублей")
 
 
+def score_answer_facts(answer):
+    """Check whether an answer retained each deliberately planted fact."""
+    normalized = " ".join(str(answer or "").lower().replace("\u00a0", " ").split())
+    compact = normalized.replace(" ", "")
+    checks = {
+        "Проект Аврора": "аврора" in normalized,
+        "15 июня": "15 июня" in normalized,
+        "50 000 рублей": "50000" in compact and (
+            "руб" in normalized or "₽" in normalized
+        ),
+    }
+    return {
+        "found": sum(checks.values()),
+        "total": len(checks),
+        "facts": [
+            {"fact": fact, "found": found} for fact, found in checks.items()
+        ],
+    }
+
+
 def prepared_compression_dialogue():
     messages = [
         {

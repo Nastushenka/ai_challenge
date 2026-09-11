@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from compression_scenarios import score_answer_facts
 
 
 class FakeAgent:
@@ -24,6 +25,14 @@ class FakeAgent:
 
 
 class ComparisonMetricsTest(unittest.TestCase):
+    def test_compression_quality_score_finds_all_control_facts(self):
+        score = score_answer_facts(
+            "Проект Аврора\nСрок: 15 июня\nБюджет: 50 000 рублей"
+        )
+
+        self.assertEqual(score["found"], 3)
+        self.assertEqual(score["total"], 3)
+
     @patch("server.SimpleAgent", FakeAgent)
     def test_four_approaches_include_metrics(self):
         result = server.compare_solutions("Задача", None)
@@ -45,6 +54,18 @@ class ComparisonMetricsTest(unittest.TestCase):
 
         self.assertEqual(len(result["solutions"]), 3)
         self.assertEqual(result["analysis_metrics"]["total_tokens"], 15)
+
+    @patch("server.SimpleAgent", FakeAgent)
+    def test_live_compression_quality_compares_two_real_request_shapes(self):
+        result = server.run_compression_quality_test()
+
+        self.assertEqual(result["model_label"], "DeepSeek V4 Pro")
+        self.assertIn("full", result)
+        self.assertIn("compressed", result)
+        self.assertGreater(
+            result["full"]["estimated_context_tokens"],
+            result["compressed"]["estimated_context_tokens"],
+        )
 
 
 if __name__ == "__main__":

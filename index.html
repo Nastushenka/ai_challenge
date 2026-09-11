@@ -297,6 +297,25 @@
     .stored-summary { margin-top: 8px; color: var(--muted); font-size: 11px; }
     .stored-summary p { max-height: 150px; overflow: auto; white-space: pre-wrap; line-height: 1.45; }
     .compression-test-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    .compression-live-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .compression-live-button {
+      border: 0; border-radius: 11px; padding: 10px 14px; cursor: pointer;
+      background: var(--accent); color: white; font: inherit; font-size: 12px; font-weight: 750;
+    }
+    .compression-live-button:hover { background: var(--accent-hover); }
+    .compression-live-button:disabled { opacity: .55; cursor: wait; }
+    .compression-live-hint { color: var(--muted); font-size: 11px; }
+    .compression-live-result { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 10px; }
+    .compression-answer { min-width: 0; padding: 13px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+    .compression-answer h3 { margin: 0 0 7px; font-size: 13px; }
+    .compression-answer pre { margin: 9px 0; white-space: pre-wrap; font: inherit; font-size: 12px; line-height: 1.5; }
+    .compression-answer .quality { color: #16805b; font-size: 11px; font-weight: 700; }
+    .compression-answer .live-metrics { margin-top: 7px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .compression-live-summary {
+      grid-column: 1 / -1; padding: 12px 14px; border-radius: 14px;
+      background: #e9f8f1; color: #126447; font-size: 12px; font-weight: 700;
+    }
+    .compression-live-error { grid-column: 1 / -1; padding: 12px; border-radius: 12px; background: #fff1f2; color: #b91c1c; font-size: 12px; }
     .token-tests { margin-top: 18px; }
     .token-tests-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
     .token-tests h2 { margin: 0; font-size: 15px; }
@@ -322,7 +341,8 @@
       .hint { max-width: 210px; }
       .model { padding-inline: 9px; }
       .comparison-grid { grid-template-columns: 1fr; }
-      .token-breakdown, .token-test-grid, .compression-test-grid { grid-template-columns: 1fr; }
+      .token-breakdown, .token-test-grid, .compression-test-grid, .compression-live-result { grid-template-columns: 1fr; }
+      .compression-live-summary, .compression-live-error { grid-column: auto; }
     }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
@@ -540,6 +560,11 @@
               <span>30 сообщений · 3 контрольных факта</span>
             </div>
             <div class="compression-test-grid" id="compression-test-grid"></div>
+            <div class="compression-live-actions">
+              <button class="compression-live-button" id="run-compression-test" type="button">Запустить живой тест</button>
+              <span class="compression-live-hint">2 запроса к выбранной модели: полная история и summary</span>
+            </div>
+            <div class="compression-live-result" id="compression-live-result" aria-live="polite"></div>
           </section>
         </section>
       </div>
@@ -595,6 +620,8 @@
     const storedSummary = document.querySelector('#stored-summary');
     const storedSummaryText = document.querySelector('#stored-summary-text');
     const compressionTestGrid = document.querySelector('#compression-test-grid');
+    const runCompressionTest = document.querySelector('#run-compression-test');
+    const compressionLiveResult = document.querySelector('#compression-live-result');
     const sessionStorageKey = 'nastia-chat-session-id';
     const createSessionId = () => {
       if (window.crypto?.randomUUID) return window.crypto.randomUUID();
@@ -710,6 +737,69 @@
         }
       } catch (_) {
         compressionTestGrid.textContent = 'Не удалось рассчитать тест компрессии.';
+      }
+    }
+
+    function renderCompressionVariant(titleText, variant) {
+      const card = document.createElement('article');
+      card.className = 'compression-answer';
+      const title = document.createElement('h3');
+      title.textContent = titleText;
+      const quality = document.createElement('div');
+      quality.className = 'quality';
+      quality.textContent = `Качество: ${variant.quality.found}/${variant.quality.total} контрольных факта`;
+      const answer = document.createElement('pre');
+      answer.textContent = variant.answer;
+      const metrics = document.createElement('div');
+      metrics.className = 'live-metrics';
+      metrics.textContent = `Вход API: ${formatNumber(variant.metrics.input_tokens)} · `
+        + `ответ: ${formatNumber(variant.metrics.output_tokens)} · `
+        + `всего: ${formatNumber(variant.metrics.total_tokens)} токенов · `
+        + `${Number(variant.metrics.elapsed_seconds).toLocaleString('ru-RU')} сек. · `
+        + `≈ $${Number(variant.metrics.cost_usd || 0).toFixed(8)}`;
+      card.append(title, quality, answer, metrics);
+      return card;
+    }
+
+    async function runLiveCompressionTest() {
+      runCompressionTest.disabled = true;
+      runCompressionTest.textContent = 'Тест выполняется…';
+      compressionLiveResult.replaceChildren();
+      const loading = document.createElement('div');
+      loading.className = 'compression-live-summary';
+      loading.textContent = 'Модель получает один вопрос дважды. Обычно это занимает до минуты.';
+      compressionLiveResult.append(loading);
+      try {
+        const response = await fetch('/api/compression-quality-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: modelSelect.value }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Не удалось выполнить тест.');
+        compressionLiveResult.replaceChildren(
+          renderCompressionVariant('Без сжатия', data.full),
+          renderCompressionVariant('Со сжатием', data.compressed),
+        );
+        const summary = document.createElement('div');
+        summary.className = 'compression-live-summary';
+        const quality = data.comparison.quality_preserved
+          ? 'Качество сохранено'
+          : 'После сжатия потеряна часть контрольных фактов';
+        summary.textContent = `${quality}. Фактический вход API: `
+          + `${formatNumber(data.full.metrics.input_tokens)} → ${formatNumber(data.compressed.metrics.input_tokens)} токенов; `
+          + `экономия ${formatNumber(data.comparison.api_input_tokens_saved)} `
+          + `(${data.comparison.api_input_savings_percent}%).`;
+        compressionLiveResult.append(summary);
+      } catch (error) {
+        compressionLiveResult.replaceChildren();
+        const message = document.createElement('div');
+        message.className = 'compression-live-error';
+        message.textContent = error.message || 'Не удалось выполнить живой тест.';
+        compressionLiveResult.append(message);
+      } finally {
+        runCompressionTest.disabled = false;
+        runCompressionTest.textContent = 'Запустить живой тест ещё раз';
       }
     }
 
@@ -1068,6 +1158,7 @@
         form.requestSubmit();
       }
     });
+    runCompressionTest.addEventListener('click', runLiveCompressionTest);
     prompt.addEventListener('input', updatePromptCount);
 
     form.addEventListener('submit', async (event) => {

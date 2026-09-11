@@ -15,7 +15,12 @@ from agent import (
     estimate_messages_tokens,
 )
 from token_scenarios import analyze_prepared_dialogues
-from compression_scenarios import analyze_compression
+from compression_scenarios import (
+    analyze_compression,
+    prepared_compression_dialogue,
+    score_answer_facts,
+)
+from context_manager import build_compressed_context
 
 
 ROOT = Path(__file__).parent
@@ -48,6 +53,63 @@ def result_metrics(result):
     if result.get("conversation_totals"):
         metrics["conversation_totals"] = result["conversation_totals"]
     return metrics
+
+
+def run_compression_quality_test(model_key="deepseek-v4-pro"):
+    """Ask one model the same fact-recall question with full and compressed history."""
+    history = prepared_compression_dialogue()
+    compressed = build_compressed_context(history)
+    question = "Назови точное название проекта, срок сдачи и бюджет."
+    instructions = (
+        "Ответь только по переданному контексту на русском языке. "
+        "Дай ровно три коротких пункта: название проекта, срок сдачи и бюджет. "
+        "Не додумывай отсутствующие данные."
+    )
+
+    def run_variant(messages):
+        return SimpleAgent(model_key).run(
+            messages + [{"role": "user", "content": question}],
+            instructions,
+            0.0,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        full_future = executor.submit(run_variant, history)
+        compressed_future = executor.submit(run_variant, compressed["messages"])
+        full_result = full_future.result()
+        compressed_result = compressed_future.result()
+
+    def variant_payload(result, context_messages):
+        return {
+            "answer": result["text"],
+            "quality": score_answer_facts(result["text"]),
+            "metrics": result_metrics(result),
+            "estimated_context_tokens": estimate_messages_tokens(context_messages),
+        }
+
+    full = variant_payload(full_result, history)
+    compact = variant_payload(compressed_result, compressed["messages"])
+    api_before = full["metrics"]["input_tokens"]
+    api_after = compact["metrics"]["input_tokens"]
+    saved = api_before - api_after
+    compact["summarized_message_count"] = compressed["summarized_message_count"]
+    compact["recent_message_count"] = compressed["recent_message_count"]
+    return {
+        "model": model_key,
+        "model_label": MODEL_OPTIONS[model_key]["label"],
+        "question": question,
+        "full": full,
+        "compressed": compact,
+        "comparison": {
+            "api_input_tokens_saved": saved,
+            "api_input_savings_percent": (
+                round(saved / api_before * 100, 1) if api_before else 0
+            ),
+            "quality_preserved": (
+                compact["quality"]["found"] >= full["quality"]["found"]
+            ),
+        },
+    }
 
 
 def compare_solutions(
@@ -343,6 +405,38 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             ConversationStore().clear(session_id)
             self.send_json(200, {"cleared": True})
+            return
+
+        if self.path == "/api/compression-quality-test":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                model_key = payload.get("model", "deepseek-v4-pro")
+            except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
+                self.send_json(400, {"error": "Некорректный запрос."})
+                return
+            if model_key not in MODEL_OPTIONS:
+                self.send_json(400, {"error": "Выберите доступную модель."})
+                return
+            try:
+                result = run_compression_quality_test(model_key)
+            except AgentConfigurationError as error:
+                self.send_json(503, {"error": str(error)})
+                return
+            except ContextWindowExceeded as error:
+                self.send_json(413, {"error": str(error), "token_report": error.report})
+                return
+            except HTTPError as error:
+                try:
+                    message = json.load(error).get("error", {}).get("message")
+                except Exception:
+                    message = None
+                self.send_json(error.code, {"error": message or "Ошибка API модели."})
+                return
+            except Exception:
+                self.send_json(502, {"error": "Не удалось выполнить живой тест компрессии."})
+                return
+            self.send_json(200, result)
             return
 
         if self.path != "/api/chat":
